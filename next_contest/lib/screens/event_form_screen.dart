@@ -6,8 +6,9 @@ import '../theme/app_theme.dart';
 class EventFormScreen extends StatefulWidget {
   final Event? event;
   final DateTime? initialDate;
+  final DateTime? initialEndDate;
 
-  const EventFormScreen({super.key, this.event, this.initialDate});
+  const EventFormScreen({super.key, this.event, this.initialDate, this.initialEndDate});
 
   @override
   State<EventFormScreen> createState() => _EventFormScreenState();
@@ -48,10 +49,10 @@ class _EventFormScreenState extends State<EventFormScreen> {
     _titleCtrl = TextEditingController(text: e?.title ?? '');
     _memoCtrl = TextEditingController(text: e?.memo ?? '');
     _startDate = e?.startDate ?? today;
-    _endDate = e?.endDate ?? today;
+    _endDate = e?.endDate ?? widget.initialEndDate ?? today;
     _startTime = e?.startTime;
     _endTime = e?.endTime;
-    _isAllDay = e?.isAllDay ?? false;
+    _isAllDay = e?.isAllDay ?? true;
     _isRecurring = e?.isRecurring ?? false;
     _recurrenceType = e?.recurrenceType ?? 'weekly';
     _recurrenceEndDate = e?.recurrenceEndDate;
@@ -224,7 +225,7 @@ class _EventFormScreenState extends State<EventFormScreen> {
           if (_isEdit)
             IconButton(
               icon: const Icon(Icons.delete_outline_rounded,
-                  color: Colors.white70),
+                  color: AppTheme.errorRed),
               onPressed: _saving ? null : _delete,
             ),
           Padding(
@@ -232,9 +233,9 @@ class _EventFormScreenState extends State<EventFormScreen> {
             child: FilledButton(
               onPressed: _saving ? null : _save,
               style: FilledButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: AppTheme.primary,
-                disabledBackgroundColor: Colors.white38,
+                backgroundColor: AppTheme.primary,
+                foregroundColor: Colors.white,
+                disabledBackgroundColor: const Color(0x667C5CFC),
                 padding:
                     const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
                 shape: RoundedRectangleBorder(
@@ -247,7 +248,7 @@ class _EventFormScreenState extends State<EventFormScreen> {
                       width: 16,
                       height: 16,
                       child: CircularProgressIndicator(
-                          strokeWidth: 2, color: AppTheme.primary))
+                          strokeWidth: 2, color: Colors.white))
                   : const Text('저장',
                       style: TextStyle(
                           fontSize: 14, fontWeight: FontWeight.w700)),
@@ -255,9 +256,11 @@ class _EventFormScreenState extends State<EventFormScreen> {
           ),
         ],
       ),
-      body: Form(
-        key: _formKey,
-        child: ListView(
+      body: SafeArea(
+        top: false,
+        child: Form(
+          key: _formKey,
+          child: ListView(
           padding: EdgeInsets.zero,
           children: [
             // ── Title ──────────────────────────────────────────────────────
@@ -345,7 +348,15 @@ class _EventFormScreenState extends State<EventFormScreen> {
                       fontWeight: FontWeight.w500,
                       color: AppTheme.textPrimary)),
               value: _isAllDay,
-              onChanged: (v) => setState(() => _isAllDay = v),
+              onChanged: (v) {
+                setState(() {
+                  _isAllDay = v;
+                  if (!v) {
+                    _startTime ??= const TimeOfDay(hour: 9, minute: 0);
+                    _endTime ??= const TimeOfDay(hour: 10, minute: 0);
+                  }
+                });
+              },
             ),
             _DateTimeRow(
               label: '시작',
@@ -462,6 +473,7 @@ class _EventFormScreenState extends State<EventFormScreen> {
           ],
         ),
       ),
+        ),
     );
   }
 }

@@ -122,4 +122,45 @@ class DatabaseService {
     final db = await _dbFuture;
     await db.delete('diaries', where: 'dateKey = ?', whereArgs: [dateKey]);
   }
+
+  Future<void> seedMayData() async {
+    final db = await _dbFuture;
+    final existing = await db.query('events',
+        where: "startDate LIKE '2026-05%'", limit: 1);
+    if (existing.isNotEmpty) return;
+
+    final rows = [
+      {'title': '근로자의 날', 'startDate': '2026-05-01', 'endDate': '2026-05-01', 'isAllDay': 1, 'color': 0xFFE53935},
+      {'title': '가족 여행', 'startDate': '2026-05-03', 'endDate': '2026-05-06', 'isAllDay': 1, 'color': 0xFF00ACC1},
+      {'title': '어린이날', 'startDate': '2026-05-05', 'endDate': '2026-05-05', 'isAllDay': 1, 'color': 0xFFFB8C00},
+      {'title': '어버이날', 'startDate': '2026-05-08', 'endDate': '2026-05-08', 'isAllDay': 1, 'color': 0xFFE91E8C},
+      {'title': '건강검진', 'startDate': '2026-05-09', 'endDate': '2026-05-09', 'startTime': 10 * 60, 'endTime': 11 * 60 + 30, 'color': 0xFF3D5AFE},
+      {'title': '팀 프로젝트 회의', 'startDate': '2026-05-12', 'endDate': '2026-05-12', 'startTime': 14 * 60, 'endTime': 15 * 60 + 30, 'color': 0xFF9C27B0},
+      {'title': '점심 약속', 'startDate': '2026-05-13', 'endDate': '2026-05-13', 'startTime': 12 * 60, 'endTime': 13 * 60, 'color': 0xFF43A047},
+      {'title': '스승의 날', 'startDate': '2026-05-15', 'endDate': '2026-05-15', 'isAllDay': 1, 'color': 0xFFFB8C00},
+      {'title': '생일 파티', 'startDate': '2026-05-16', 'endDate': '2026-05-16', 'startTime': 18 * 60, 'endTime': 21 * 60, 'color': 0xFF9C27B0},
+      {'title': 'PT 트레이닝', 'startDate': '2026-05-20', 'endDate': '2026-05-20', 'startTime': 7 * 60, 'endTime': 8 * 60, 'isRecurring': 1, 'recurrenceType': 'weekly', 'color': 0xFF009688},
+      {'title': '부모님 저녁식사', 'startDate': '2026-05-22', 'endDate': '2026-05-22', 'startTime': 19 * 60, 'endTime': 21 * 60, 'color': 0xFFE91E8C},
+      {'title': '부처님오신날', 'startDate': '2026-05-25', 'endDate': '2026-05-25', 'isAllDay': 1, 'color': 0xFFFB8C00},
+      {'title': '영화 관람', 'startDate': '2026-05-27', 'endDate': '2026-05-27', 'startTime': 15 * 60, 'endTime': 17 * 60 + 30, 'color': 0xFF546E7A},
+      {'title': '여름 여행', 'startDate': '2026-05-29', 'endDate': '2026-06-01', 'isAllDay': 1, 'color': 0xFF00ACC1},
+      {'title': '월간 정리', 'startDate': '2026-05-31', 'endDate': '2026-05-31', 'startTime': 10 * 60, 'endTime': 12 * 60, 'color': 0xFF6D4C41},
+    ];
+
+    for (final r in rows) {
+      await db.insert('events', {
+        'title': r['title'],
+        'startDate': r['startDate'],
+        'endDate': r['endDate'],
+        'startTimeMinutes': r['startTime'],
+        'endTimeMinutes': r['endTime'],
+        'memo': null,
+        'isAllDay': r['isAllDay'] ?? 0,
+        'isRecurring': r['isRecurring'] ?? 0,
+        'recurrenceType': r['recurrenceType'],
+        'recurrenceEndDate': null,
+        'color': r['color'],
+      });
+    }
+  }
 }

@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'screens/calendar_screen.dart';
 import 'screens/diary_list_screen.dart';
-import 'screens/settings_screen.dart';
+import 'screens/splash_screen.dart';
 import 'theme/app_theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    systemNavigationBarColor: Colors.transparent,
+    systemNavigationBarContrastEnforced: false,
+    systemNavigationBarIconBrightness: Brightness.dark,
+  ));
   runApp(const DayceApp());
 }
 
@@ -18,7 +24,7 @@ class DayceApp extends StatelessWidget {
       title: 'Dayce',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.theme,
-      home: const MainShell(),
+      home: const SplashScreen(),
     );
   }
 }
@@ -34,12 +40,24 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _currentIndex = 0;
+  final _diaryKey = GlobalKey<DiaryListScreenState>();
+  late final List<Widget> _screens;
 
-  static const _screens = [
-    CalendarScreen(),
-    DiaryListScreen(),
-    SettingsScreen(),
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _screens = [
+      const CalendarScreen(),
+      DiaryListScreen(key: _diaryKey),
+    ];
+  }
+
+  void _onTabSelected(int i) {
+    if (i == 1 && _currentIndex != 1) {
+      _diaryKey.currentState?.refresh();
+    }
+    setState(() => _currentIndex = i);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -61,7 +79,7 @@ class _MainShellState extends State<MainShell> {
         ),
         child: NavigationBar(
           selectedIndex: _currentIndex,
-          onDestinationSelected: (i) => setState(() => _currentIndex = i),
+          onDestinationSelected: _onTabSelected,
           backgroundColor: AppTheme.surface,
           elevation: 0,
           destinations: const [
@@ -74,11 +92,6 @@ class _MainShellState extends State<MainShell> {
               icon: Icon(Icons.auto_stories_outlined),
               selectedIcon: Icon(Icons.auto_stories),
               label: '일기',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.settings_outlined),
-              selectedIcon: Icon(Icons.settings),
-              label: '설정',
             ),
           ],
         ),

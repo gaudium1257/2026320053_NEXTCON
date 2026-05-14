@@ -21,6 +21,7 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
   bool _loading = true;
   bool _saving = false;
   bool _hasChanges = false;
+  bool _wasSaved = false;
   int _charCount = 0;
 
   static const _moods = ['😊', '😄', '😢', '😤', '😴', '🤗'];
@@ -71,17 +72,24 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
     }
     setState(() => _saving = true);
     final now = DateTime.now();
+    final diary = Diary(
+      dateKey: Diary.keyFrom(widget.date),
+      content: content,
+      mood: _mood,
+      createdAt: _existing?.createdAt ?? now,
+      updatedAt: now,
+    );
     try {
-      await _db.saveDiary(
-        Diary(
-          dateKey: Diary.keyFrom(widget.date),
-          content: content,
-          mood: _mood,
-          createdAt: _existing?.createdAt ?? now,
-          updatedAt: now,
-        ),
-      );
-      if (mounted) Navigator.pop(context, true);
+      await _db.saveDiary(diary);
+      if (!mounted) return;
+      setState(() {
+        _existing = diary;
+        _hasChanges = false;
+        _saving = false;
+        _wasSaved = true;
+      });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('저장됐어요.')));
     } catch (_) {
       if (!mounted) return;
       setState(() => _saving = false);
@@ -105,7 +113,7 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
           TextButton(
               onPressed: () => Navigator.pop(ctx, true),
               child: const Text('삭제',
-                  style: TextStyle(color: Colors.redAccent))),
+                  style: TextStyle(color: AppTheme.errorRed))),
         ],
       ),
     );
@@ -126,15 +134,21 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
     final result = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('저장하지 않고 나가기'),
-        content: const Text('작성 중인 내용이 저장되지 않아요.'),
+        icon: const Icon(Icons.edit_off_rounded,
+            color: AppTheme.diaryAccent, size: 28),
+        title: const Text('나가면 저장되지 않아요'),
+        content: const Text('지금까지 작성한 내용이 사라져요.'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('계속 작성')),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('계속 작성'),
+          ),
           TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('나가기')),
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(
+                foregroundColor: AppTheme.errorRed),
+            child: const Text('나가기'),
+          ),
         ],
       ),
     );
@@ -155,19 +169,18 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: !_hasChanges,
+      canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
         final nav = Navigator.of(context);
         final leave = await _onWillPop();
-        if (leave) nav.pop();
+        if (leave) nav.pop(_wasSaved);
       },
       child: Scaffold(
         backgroundColor: AppTheme.background,
         appBar: AppBar(
-          backgroundColor: AppTheme.diaryAccent,
-          foregroundColor: AppTheme.textPrimary,
-          iconTheme: const IconThemeData(color: AppTheme.textPrimary),
+          backgroundColor: AppTheme.surface,
+          iconTheme: const IconThemeData(color: AppTheme.primary),
           titleTextStyle: const TextStyle(
             fontFamily: 'Pretendard',
             fontSize: 15,
@@ -187,7 +200,7 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
             if (_existing != null)
               IconButton(
                 icon: const Icon(Icons.delete_outline_rounded,
-                    color: Colors.redAccent, size: 22),
+                    color: AppTheme.errorRed, size: 22),
                 onPressed: _saving ? null : _delete,
               ),
             Padding(
@@ -195,9 +208,9 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
               child: FilledButton(
                 onPressed: (_loading || _saving) ? null : _save,
                 style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF1A1A2E),
+                  backgroundColor: AppTheme.primary,
                   foregroundColor: Colors.white,
-                  disabledBackgroundColor: Colors.black26,
+                  disabledBackgroundColor: const Color(0x667C5CFC),
                   padding: const EdgeInsets.symmetric(
                       horizontal: 18, vertical: 8),
                   shape: RoundedRectangleBorder(
@@ -221,39 +234,58 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
         ),
         body: _loading
             ? const Center(child: CircularProgressIndicator())
-            : Column(children: [
+            : SafeArea(
+                top: false,
+                child: Column(children: [
                 // ── Mood selector ────────────────────────────────────────
                 Container(
-                  color: AppTheme.diaryAccentBg,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 10),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: _moods.map((emoji) {
-                      final selected = _mood == emoji;
-                      return GestureDetector(
-                        onTap: () => setState(() {
-                          _mood = selected ? null : emoji;
-                          _hasChanges = true;
-                        }),
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 150),
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            color: selected
-                                ? AppTheme.diaryAccent
-                                : Colors.transparent,
-                            shape: BoxShape.circle,
-                          ),
-                          child: Center(
-                            child: Text(emoji,
-                                style: TextStyle(
-                                    fontSize: selected ? 24 : 22)),
-                          ),
-                        ),
-                      );
-                    }).toList(),
+                  color: AppTheme.surface,
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('오늘의 기분',
+                          style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.textLight,
+                              letterSpacing: 0.4)),
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: _moods.map((emoji) {
+                          final selected = _mood == emoji;
+                          return GestureDetector(
+                            onTap: () => setState(() {
+                              _mood = selected ? null : emoji;
+                              _hasChanges = true;
+                            }),
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 150),
+                              width: 46,
+                              height: 46,
+                              decoration: BoxDecoration(
+                                color: selected
+                                    ? AppTheme.diaryAccentBg
+                                    : AppTheme.background,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: selected
+                                      ? AppTheme.diaryAccent
+                                      : Colors.transparent,
+                                  width: 2,
+                                ),
+                              ),
+                              child: Center(
+                                child: Text(emoji,
+                                    style: TextStyle(
+                                        fontSize: selected ? 24 : 21)),
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ],
                   ),
                 ),
                 const Divider(height: 1),
@@ -303,13 +335,23 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
 
                 // ── Status bar ───────────────────────────────────────────
                 Container(
-                  color: AppTheme.diaryAccentBg,
+                  decoration: const BoxDecoration(
+                    color: AppTheme.surface,
+                    border: Border(
+                        top: BorderSide(color: AppTheme.divider, width: 1)),
+                  ),
                   padding: const EdgeInsets.symmetric(
-                      horizontal: 20, vertical: 8),
+                      horizontal: 20, vertical: 10),
                   child: Row(children: [
-                    const Icon(Icons.auto_stories_outlined,
-                        size: 14, color: AppTheme.diaryAccent),
-                    const SizedBox(width: 6),
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: const BoxDecoration(
+                        color: AppTheme.diaryAccent,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
                     Text(
                       _existing == null ? '새 일기' : '일기 수정 중',
                       style: const TextStyle(
@@ -320,10 +362,11 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
                     Text('$_charCount자',
                         style: const TextStyle(
                             fontSize: 12,
-                            color: AppTheme.textSecondary)),
+                            color: AppTheme.textLight)),
                   ]),
                 ),
               ]),
+            ),
       ),
     );
   }

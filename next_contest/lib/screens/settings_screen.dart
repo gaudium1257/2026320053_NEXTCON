@@ -8,8 +8,10 @@ class SettingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('설정')),
-      body: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 16),
+      body: SafeArea(
+        top: false,
+        child: ListView(
+          padding: const EdgeInsets.symmetric(vertical: 16),
         children: [
           // ── 앱 정보 섹션 ──────────────────────────────────────────────
           _SectionLabel('앱 정보'),
@@ -46,6 +48,7 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
         ],
+        ),
       ),
     );
   }

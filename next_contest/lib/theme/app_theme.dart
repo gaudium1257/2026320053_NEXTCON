@@ -1,30 +1,36 @@
 import 'package:flutter/material.dart';
 
 class AppTheme {
-  // ── Palette ──────────────────────────────────────────────────────────────
-  static const Color primary       = Color(0xFF3D5AFE); // 인디고 블루
-  static const Color primaryDark   = Color(0xFF0031CA);
-  static const Color primaryLight  = Color(0xFFE8EAFF); // 인디고 연
-  static const Color accent        = Color(0xFF00BFA5); // 민트/틸
-  static const Color background    = Color(0xFFF5F6FF); // 연 라벤더 화이트
-  static const Color surface       = Color(0xFFFFFFFF);
-  static const Color diaryAccent   = Color(0xFFFFD600); // 따뜻한 노란빛
-  static const Color diaryAccentBg = Color(0xFFFFFDE7); // 연한 노란 배경
-  static const Color textPrimary   = Color(0xFF1A1A2E);
-  static const Color textSecondary = Color(0xFF6B7280);
-  static const Color textLight     = Color(0xFF9CA3AF);
-  static const Color divider       = Color(0xFFE8EAF6);
+  // ── Palette ───────────────────────────────────────────────────────────────
+  static const Color primary       = Color(0xFF7C5CFC); // 바이올렛 퍼플
+  static const Color primaryDark   = Color(0xFF5B3DD8); // 딥 퍼플
+  static const Color primaryLight  = Color(0xFFEDE8FF); // 연 라벤더
+  static const Color accent        = Color(0xFFF59E0B); // 웜 앰버 (일기 포인트)
+  static const Color background    = Color(0xFFF8F7FC); // 아이보리·퍼플 크림
+  static const Color surface       = Color(0xFFFFFFFF); // 카드/시트 순백
+  static const Color diaryAccent   = Color(0xFFF59E0B); // 앰버
+  static const Color diaryAccentBg = Color(0xFFFFF8E6); // 연 앰버 배경
+  static const Color textPrimary   = Color(0xFF1D1640); // 거의 검정·퍼플 베이스
+  static const Color textSecondary = Color(0xFF6B6485); // 뮤트 라벤더-그레이
+  static const Color textLight     = Color(0xFFA8A3BF); // 연 라벤더-그레이
+  static const Color divider       = Color(0xFFECEAF5); // 아주 연한 퍼플 구분선
   static const Color errorRed      = Color(0xFFEF5350);
 
-  // ── Shadow ───────────────────────────────────────────────────────────────
-  static const Color _shadow = Color(0x263D5AFE);
+  // ── Shadow ────────────────────────────────────────────────────────────────
+  static const Color _shadow = Color(0x147C5CFC); // 8% 퍼플 그림자
 
-  // ── Theme ────────────────────────────────────────────────────────────────
+  // ── BoxShadow 헬퍼 ────────────────────────────────────────────────────────
+  static List<BoxShadow> get cardShadow => const [
+        BoxShadow(color: _shadow, blurRadius: 14, offset: Offset(0, 3)),
+      ];
+  static List<BoxShadow> get softShadow => const [
+        BoxShadow(color: _shadow, blurRadius: 8, offset: Offset(0, 2)),
+      ];
+
+  // ── Theme ─────────────────────────────────────────────────────────────────
   static ThemeData get theme {
     return ThemeData(
       useMaterial3: true,
-      // Pretendard 폰트 사용 — pubspec.yaml에 폰트 asset 추가 필요
-      // 없으면 시스템 폰트로 자동 fallback
       fontFamily: 'Pretendard',
       colorScheme: ColorScheme.fromSeed(
         seedColor: primary,
@@ -41,27 +47,35 @@ class AppTheme {
       ),
       scaffoldBackgroundColor: background,
 
-      // ── AppBar: 파란 배경 / 흰 텍스트 ──────────────────────────────────
-      appBarTheme: const AppBarTheme(
-        backgroundColor: primary,
-        foregroundColor: Colors.white,
+      // ── AppBar: 흰 배경 + 연한 하단 그림자 (밝은 미니멀) ─────────────────
+      appBarTheme: AppBarTheme(
+        backgroundColor: surface,
+        foregroundColor: textPrimary,
         elevation: 0,
-        scrolledUnderElevation: 0,
+        scrolledUnderElevation: 1,
+        shadowColor: _shadow,
+        surfaceTintColor: Colors.transparent,
         centerTitle: true,
-        titleTextStyle: TextStyle(
+        titleTextStyle: const TextStyle(
           fontFamily: 'Pretendard',
           fontSize: 18,
           fontWeight: FontWeight.w700,
-          color: Colors.white,
+          color: textPrimary,
           letterSpacing: -0.3,
         ),
-        iconTheme: IconThemeData(color: Colors.white),
+        iconTheme: const IconThemeData(color: primary),
+        shape: Border(
+          bottom: BorderSide(
+            color: divider,
+            width: 1,
+          ),
+        ),
       ),
 
-      // ── Card: 흰 배경 + 인디고 그림자 ─────────────────────────────────
-      cardTheme: const CardThemeData(
+      // ── Card ──────────────────────────────────────────────────────────────
+      cardTheme: CardThemeData(
         color: surface,
-        elevation: 2,
+        elevation: 0,
         shadowColor: _shadow,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
@@ -69,10 +83,10 @@ class AppTheme {
         ),
       ),
 
-      // ── Input ─────────────────────────────────────────────────────────
+      // ── Input ─────────────────────────────────────────────────────────────
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: surface,
+        fillColor: background,
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         border: OutlineInputBorder(
@@ -99,12 +113,12 @@ class AppTheme {
         labelStyle: const TextStyle(color: textSecondary),
       ),
 
-      // ── FilledButton ───────────────────────────────────────────────────
+      // ── FilledButton ──────────────────────────────────────────────────────
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           backgroundColor: primary,
           foregroundColor: Colors.white,
-          disabledBackgroundColor: Color(0x663D5AFE),
+          disabledBackgroundColor: const Color(0x667C5CFC),
           shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12)),
           padding: const EdgeInsets.symmetric(vertical: 14),
@@ -115,7 +129,7 @@ class AppTheme {
         ),
       ),
 
-      // ── OutlinedButton ─────────────────────────────────────────────────
+      // ── OutlinedButton ────────────────────────────────────────────────────
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
           foregroundColor: primary,
@@ -128,7 +142,7 @@ class AppTheme {
         ),
       ),
 
-      // ── TextButton ────────────────────────────────────────────────────
+      // ── TextButton ────────────────────────────────────────────────────────
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
           foregroundColor: primary,
@@ -136,11 +150,11 @@ class AppTheme {
         ),
       ),
 
-      // ── FAB: Extended 스타일 ───────────────────────────────────────────
+      // ── FAB ───────────────────────────────────────────────────────────────
       floatingActionButtonTheme: const FloatingActionButtonThemeData(
         backgroundColor: primary,
         foregroundColor: Colors.white,
-        elevation: 3,
+        elevation: 4,
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.all(Radius.circular(16))),
         extendedPadding:
@@ -151,7 +165,7 @@ class AppTheme {
             fontWeight: FontWeight.w600),
       ),
 
-      // ── NavigationBar ─────────────────────────────────────────────────
+      // ── NavigationBar ─────────────────────────────────────────────────────
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: surface,
         elevation: 0,
@@ -174,7 +188,7 @@ class AppTheme {
         }),
       ),
 
-      // ── Switch ────────────────────────────────────────────────────────
+      // ── Switch ────────────────────────────────────────────────────────────
       switchTheme: SwitchThemeData(
         thumbColor: WidgetStateProperty.resolveWith((states) =>
             states.contains(WidgetState.selected)
@@ -186,17 +200,17 @@ class AppTheme {
                 : Colors.grey[200]),
       ),
 
-      // ── Divider ───────────────────────────────────────────────────────
+      // ── Divider ───────────────────────────────────────────────────────────
       dividerTheme: const DividerThemeData(
         color: divider,
         thickness: 1,
         space: 0,
       ),
 
-      // ── Dialog ───────────────────────────────────────────────────────
+      // ── Dialog ────────────────────────────────────────────────────────────
       dialogTheme: const DialogThemeData(
         backgroundColor: surface,
-        elevation: 4,
+        elevation: 8,
         shadowColor: _shadow,
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.all(Radius.circular(20))),
@@ -209,7 +223,7 @@ class AppTheme {
             TextStyle(fontSize: 14, color: textSecondary),
       ),
 
-      // ── SnackBar ──────────────────────────────────────────────────────
+      // ── SnackBar ──────────────────────────────────────────────────────────
       snackBarTheme: SnackBarThemeData(
         backgroundColor: textPrimary,
         contentTextStyle:
@@ -219,7 +233,7 @@ class AppTheme {
         behavior: SnackBarBehavior.floating,
       ),
 
-      // ── Chip (월별 필터 등) ────────────────────────────────────────────
+      // ── Chip ──────────────────────────────────────────────────────────────
       chipTheme: ChipThemeData(
         backgroundColor: surface,
         selectedColor: primaryLight,

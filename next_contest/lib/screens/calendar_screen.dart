@@ -1,13 +1,16 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/event.dart';
 import '../models/diary.dart';
 import '../services/database_service.dart';
 import '../theme/app_theme.dart';
 import 'event_form_screen.dart';
 import 'diary_form_screen.dart';
+import 'settings_screen.dart';
 
 enum _ViewMode { day, week, month, year }
+enum _MonthMode { expanded, compact }
 
 bool _isSameDay(DateTime a, DateTime b) =>
     a.year == b.year && a.month == b.month && a.day == b.day;
@@ -46,10 +49,12 @@ class CalendarScreen extends StatefulWidget {
   State<CalendarScreen> createState() => _CalendarScreenState();
 }
 
-class _CalendarScreenState extends State<CalendarScreen> {
+class _CalendarScreenState extends State<CalendarScreen>
+    with TickerProviderStateMixin {
   final _db = DatabaseService();
 
   _ViewMode _viewMode = _ViewMode.month;
+  _MonthMode _monthMode = _MonthMode.expanded;
   DateTime _focusedDay = DateTime.now();
   DateTime _selectedDay = DateTime.now();
 
@@ -58,11 +63,23 @@ class _CalendarScreenState extends State<CalendarScreen> {
   List<Event> _selectedEvents = [];
   Diary? _selectedDiary;
 
-  Set<String> _eventDateSet = {};
-  int _eventDateSetYear = -1;
-
   bool _loading = true;
+
+  DateTime? _dragStartDay;
+  DateTime? _dragEndDay;
+  bool _isDragging = false;
+
   late final ScrollController _timelineScrollCtrl;
+
+  static const int _kPageMid = 10000;
+  late final DateTime _monthOrigin;
+  late final DateTime _weekOrigin;
+  late final DateTime _dayOrigin;
+  late final PageController _monthPageCtrl;
+  late final PageController _weekPageCtrl;
+  late final PageController _dayPageCtrl;
+  late final PageController _yearPageCtrl;
+  late final AnimationController _monthSizeCtrl;
 
   static const _wdLabels = ['월', '화', '수', '목', '금', '토', '일'];
 
@@ -70,6 +87,16 @@ class _CalendarScreenState extends State<CalendarScreen> {
   void initState() {
     super.initState();
     final now = DateTime.now();
+    _monthOrigin = DateTime(now.year, now.month, 1);
+    final ws = now.subtract(Duration(days: now.weekday % 7));
+    _weekOrigin = DateTime(ws.year, ws.month, ws.day);
+    _dayOrigin = DateTime(now.year, now.month, now.day);
+    _monthPageCtrl = PageController(initialPage: _kPageMid);
+    _weekPageCtrl = PageController(initialPage: _kPageMid);
+    _dayPageCtrl = PageController(initialPage: _kPageMid);
+    _yearPageCtrl = PageController(initialPage: _kPageMid);
+    _monthSizeCtrl = AnimationController(
+        vsync: this, value: 1.0, duration: const Duration(milliseconds: 260));
     _timelineScrollCtrl = ScrollController(
       initialScrollOffset: (now.hour * 64.0 - 80).clamp(0, double.infinity),
     );
@@ -79,16 +106,23 @@ class _CalendarScreenState extends State<CalendarScreen> {
   @override
   void dispose() {
     _timelineScrollCtrl.dispose();
+    _monthPageCtrl.dispose();
+    _weekPageCtrl.dispose();
+    _dayPageCtrl.dispose();
+    _yearPageCtrl.dispose();
+    _monthSizeCtrl.dispose();
     super.dispose();
   }
 
   // ── Data ───────────────────────────────────────────────────────────────────
 
   Future<void> _loadData() async {
-    final events = await _db.getAllEvents();
-    final diaries = await _db.getAllDiaries();
+    final results = await Future.wait([
+      _db.getAllEvents(),
+      _db.getAllDiaries(),
+    ]);
     if (!mounted) return;
-    _setData(events, diaries);
+    _setData(results[0] as List<Event>, results[1] as List<Diary>);
   }
 
   void _setData(List<Event> events, List<Diary> diaries) {
@@ -100,7 +134,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
       _selectedDiary = diaryMap[Diary.keyFrom(_selectedDay)];
       _loading = false;
     });
-    if (_viewMode == _ViewMode.year) _ensureEventDateSet();
   }
 
   List<Event> _eventsForDay(DateTime day, List<Event> events) =>
@@ -126,31 +159,48 @@ class _CalendarScreenState extends State<CalendarScreen> {
     }
   }
 
-  void _changeDay(int delta) {
-    final d = _selectedDay.add(Duration(days: delta));
-    _onDaySelected(d, d);
-  }
+  // ── Page ↔ Date helpers ────────────────────────────────────────────────────
+
+  DateTime _monthForPage(int page) => DateTime(
+      _monthOrigin.year, _monthOrigin.month + (page - _kPageMid));
+
+  DateTime _weekStartForPage(int page) =>
+      _weekOrigin.add(Duration(days: (page - _kPageMid) * 7));
+
+  DateTime _dayForPage(int page) =>
+      _dayOrigin.add(Duration(days: page - _kPageMid));
+
+  int _pageForMonth(DateTime date) =>
+      _kPageMid +
+      (date.year - _monthOrigin.year) * 12 +
+      (date.month - _monthOrigin.month);
+
+  int _pageForWeek(DateTime weekStart) =>
+      _kPageMid + weekStart.difference(_weekOrigin).inDays ~/ 7;
+
+  int _pageForDay(DateTime day) =>
+      _kPageMid +
+      DateTime(day.year, day.month, day.day)
+          .difference(_dayOrigin)
+          .inDays;
+
+  int _pageForYear(int year) => _kPageMid + year - _monthOrigin.year;
 
   void _setViewMode(_ViewMode mode) {
-    if (mode == _ViewMode.year) _ensureEventDateSet();
     setState(() => _viewMode = mode);
-  }
-
-  void _ensureEventDateSet() {
-    final year = _focusedDay.year;
-    if (_eventDateSetYear == year) return;
-    final set = <String>{};
-    for (var m = 1; m <= 12; m++) {
-      final days = DateTime(year, m + 1, 0).day;
-      for (var d = 1; d <= days; d++) {
-        final date = DateTime(year, m, d);
-        if (_allEvents.any((e) => e.occursOn(date))) {
-          set.add(Diary.keyFrom(date));
-        }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mode == _ViewMode.month && _monthPageCtrl.hasClients) {
+        _monthPageCtrl.jumpToPage(_pageForMonth(_focusedDay));
+      } else if (mode == _ViewMode.week && _weekPageCtrl.hasClients) {
+        final ws = _focusedDay.subtract(Duration(days: _focusedDay.weekday % 7));
+        _weekPageCtrl.jumpToPage(
+            _pageForWeek(DateTime(ws.year, ws.month, ws.day)));
+      } else if (mode == _ViewMode.day && _dayPageCtrl.hasClients) {
+        _dayPageCtrl.jumpToPage(_pageForDay(_focusedDay));
+      } else if (mode == _ViewMode.year && _yearPageCtrl.hasClients) {
+        _yearPageCtrl.jumpToPage(_pageForYear(_focusedDay.year));
       }
-    }
-    _eventDateSet = set;
-    _eventDateSetYear = year;
+    });
   }
 
   Future<void> _showModeSelection(DateTime day) async {
@@ -179,6 +229,21 @@ class _CalendarScreenState extends State<CalendarScreen> {
     if (changed == true) _loadData();
   }
 
+  bool _isInDragRange(DateTime day) {
+    if (!_isDragging || _dragStartDay == null || _dragEndDay == null) return false;
+    final s = _dragStartDay!.isBefore(_dragEndDay!) ? _dragStartDay! : _dragEndDay!;
+    final e = _dragStartDay!.isBefore(_dragEndDay!) ? _dragEndDay! : _dragStartDay!;
+    return !day.isBefore(s) && !day.isAfter(e);
+  }
+
+  void _endDragSelect() {
+    if (!_isDragging || _dragStartDay == null || _dragEndDay == null) return;
+    final s = _dragStartDay!.isBefore(_dragEndDay!) ? _dragStartDay! : _dragEndDay!;
+    final e = _dragStartDay!.isBefore(_dragEndDay!) ? _dragEndDay! : _dragStartDay!;
+    setState(() { _isDragging = false; _dragStartDay = null; _dragEndDay = null; });
+    _navigateTo(EventFormScreen(initialDate: s, initialEndDate: e));
+  }
+
   // ── Formatting ─────────────────────────────────────────────────────────────
 
   String _fmtSelectedDate(DateTime d) =>
@@ -191,7 +256,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   String _fmtWeekRange(DateTime s, DateTime e) {
     if (s.month == e.month) {
-      return '${s.year}년 ${s.month}월 ${s.day}~${e.day}일';
+      return '${s.month}월 ${s.day}~${e.day}일';
     }
     return '${s.month}월 ${s.day}일 ~ ${e.month}월 ${e.day}일';
   }
@@ -202,19 +267,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leadingWidth: 80,
+        leading: _buildViewModeButton(),
         title: const Text('Dayce'),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(36),
-          child: _buildViewModeBar(),
-        ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.today_rounded, size: 22),
-            tooltip: '오늘로 이동',
-            onPressed: () {
-              final today = DateTime.now();
-              _onDaySelected(today, today);
-            },
+            icon: const Icon(Icons.settings_rounded, size: 22),
+            tooltip: '설정',
+            onPressed: () => _navigateTo(const SettingsScreen()),
           ),
           const SizedBox(width: 4),
         ],
@@ -223,49 +283,49 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ? const Center(child: CircularProgressIndicator())
           : _buildBody(),
       floatingActionButton: FloatingActionButton(
+        heroTag: 'calendar_fab',
         onPressed: () => _showModeSelection(_selectedDay),
         child: const Icon(Icons.add_rounded, size: 28),
       ),
     );
   }
 
-  Widget _buildViewModeBar() {
+  Widget _buildViewModeButton() {
     const labels = {
       _ViewMode.day: '일',
       _ViewMode.week: '주',
       _ViewMode.month: '월',
       _ViewMode.year: '년',
     };
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: _ViewMode.values.map((mode) {
-          final selected = _viewMode == mode;
-          return GestureDetector(
-            onTap: () => _setViewMode(mode),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
-              margin: const EdgeInsets.symmetric(horizontal: 4),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
-              decoration: BoxDecoration(
-                color: selected ? Colors.white : Colors.transparent,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Text(
+    return PopupMenuButton<_ViewMode>(
+      initialValue: _viewMode,
+      onSelected: _setViewMode,
+      offset: const Offset(0, 48),
+      icon: const Icon(Icons.calendar_month_rounded,
+          color: AppTheme.primary, size: 24),
+      itemBuilder: (ctx) => _ViewMode.values.map((mode) {
+        final selected = mode == _viewMode;
+        return PopupMenuItem(
+          value: mode,
+          child: Row(
+            children: [
+              if (selected)
+                const Icon(Icons.check_rounded,
+                    size: 16, color: AppTheme.primary)
+              else
+                const SizedBox(width: 16),
+              const SizedBox(width: 8),
+              Text(
                 labels[mode]!,
                 style: TextStyle(
-                  fontSize: 13,
-                  fontWeight:
-                      selected ? FontWeight.w700 : FontWeight.w400,
-                  color: selected ? AppTheme.primary : Colors.white70,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+                  color: selected ? AppTheme.primary : AppTheme.textPrimary,
                 ),
               ),
-            ),
-          );
-        }).toList(),
-      ),
+            ],
+          ),
+        );
+      }).toList(),
     );
   }
 
@@ -279,22 +339,17 @@ class _CalendarScreenState extends State<CalendarScreen> {
   // ── Day View — 24h Timeline ────────────────────────────────────────────────
 
   Widget _buildDayView() {
-    final timed = _selectedEvents
-        .where((e) => !e.isAllDay && !e.isMultiDay && e.startTimeMinutes != null)
-        .toList();
-    final banners = _selectedEvents
-        .where((e) => e.isAllDay || e.isMultiDay || e.startTimeMinutes == null)
-        .toList();
-
     return Column(children: [
-      // Date navigation
+      // Fixed navigation header
       Container(
         color: AppTheme.surface,
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
         child: Row(children: [
           IconButton(
             icon: const Icon(Icons.chevron_left, color: AppTheme.textSecondary),
-            onPressed: () => _changeDay(-1),
+            onPressed: () => _dayPageCtrl.previousPage(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut),
           ),
           Expanded(
             child: GestureDetector(
@@ -305,7 +360,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   firstDate: DateTime(2020),
                   lastDate: DateTime(2035),
                 );
-                if (picked != null) _onDaySelected(picked, picked);
+                if (picked != null) {
+                  _onDaySelected(picked, picked);
+                  _dayPageCtrl.animateToPage(_pageForDay(picked),
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut);
+                }
               },
               child: Text(
                 _fmtFullDate(_selectedDay),
@@ -320,395 +380,359 @@ class _CalendarScreenState extends State<CalendarScreen> {
           IconButton(
             icon: const Icon(Icons.chevron_right,
                 color: AppTheme.textSecondary),
-            onPressed: () => _changeDay(1),
+            onPressed: () => _dayPageCtrl.nextPage(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut),
           ),
         ]),
       ),
       const Divider(height: 1),
-
-      // All-day / multi-day / diary banners
-      if (banners.isNotEmpty || _selectedDiary != null)
-        _buildDayBanners(banners),
-
-      // Timeline
-      Expanded(child: _buildTimeline(timed)),
+      // Sliding day content — follows finger
+      Expanded(
+        child: PageView.builder(
+          controller: _dayPageCtrl,
+          itemBuilder: (_, page) {
+            final day = _dayForPage(page);
+            final events = _eventsForDay(day, _allEvents);
+            final diary = _diaryByDate[Diary.keyFrom(day)];
+            return _DayPageContent(
+              key: ValueKey(day),
+              day: day,
+              events: events,
+              diary: diary,
+              onEventTap: (e) => _navigateTo(EventFormScreen(event: e)),
+              onDiaryTap: () => _navigateTo(DiaryFormScreen(date: day)),
+            );
+          },
+          onPageChanged: (page) {
+            final day = _dayForPage(page);
+            setState(() {
+              _selectedDay = day;
+              _focusedDay = day;
+              _selectedEvents = _eventsForDay(day, _allEvents);
+              _selectedDiary = _diaryByDate[Diary.keyFrom(day)];
+            });
+          },
+        ),
+      ),
     ]);
   }
 
-  Widget _buildDayBanners(List<Event> banners) {
-    return Container(
-      color: AppTheme.surface,
-      padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ...banners.map((e) => GestureDetector(
-                onTap: () => _navigateTo(EventFormScreen(event: e)),
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 4),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: e.displayColor,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Row(children: [
-                    const Icon(Icons.event_rounded,
-                        size: 13, color: Colors.white70),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(e.title,
-                          style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white),
-                          overflow: TextOverflow.ellipsis),
-                    ),
-                    Text(
-                        e.isAllDay
-                            ? '종일'
-                            : e.isMultiDay
-                                ? '여러 날'
-                                : '',
-                        style: const TextStyle(
-                            fontSize: 11, color: Colors.white70)),
-                  ]),
-                ),
-              )),
-          if (_selectedDiary != null)
-            GestureDetector(
-              onTap: () => _navigateTo(DiaryFormScreen(date: _selectedDay)),
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 4),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: AppTheme.diaryAccentBg,
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: AppTheme.diaryAccent),
-                ),
+  // ── Month View ─────────────────────────────────────────────────────────────
+
+  Widget _buildMonthView() {
+    return LayoutBuilder(builder: (_, constraints) {
+      final weeks = _buildWeeks(_focusedDay.year, _focusedDay.month);
+      // Fixed heights: nav row 48px + DOW 28px + divider 1px
+      const fixedH = 77.0;
+      const fabClearance = 80.0;
+      final expandH =
+          (constraints.maxHeight - fixedH - fabClearance).clamp(120.0, double.infinity);
+      const compactRowH = 48.0;
+      final compactH = weeks.length * compactRowH;
+
+      return GestureDetector(
+        onVerticalDragUpdate: (d) {
+          final delta = d.delta.dy / (expandH - compactH);
+          _monthSizeCtrl.value =
+              (_monthSizeCtrl.value + delta).clamp(0.0, 1.0);
+        },
+        onVerticalDragEnd: (d) {
+          final v = d.primaryVelocity ?? 0;
+          final goCompact =
+              v < -200 || (v.abs() < 200 && _monthSizeCtrl.value < 0.5);
+          if (goCompact) {
+            _monthSizeCtrl.animateTo(0.0,
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.easeOut);
+            setState(() => _monthMode = _MonthMode.compact);
+          } else {
+            _monthSizeCtrl.animateTo(1.0,
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.easeOut);
+            setState(() => _monthMode = _MonthMode.expanded);
+          }
+        },
+        child: Column(children: [
+          // Navigation row + DOW header — surface background (consistent with other views)
+          Container(
+            color: AppTheme.surface,
+            child: Column(children: [
+              SizedBox(
+                height: 48,
                 child: Row(children: [
-                  const Text('📓', style: TextStyle(fontSize: 13)),
-                  const SizedBox(width: 6),
+                  IconButton(
+                    icon: const Icon(Icons.chevron_left,
+                        color: AppTheme.textSecondary),
+                    onPressed: () => _monthPageCtrl.previousPage(
+                        duration: const Duration(milliseconds: 300),
+                        curve: Curves.easeInOut),
+                  ),
                   Expanded(
                     child: Text(
-                      _selectedDiary!.content,
+                      _fmtMonthYear(_focusedDay.year, _focusedDay.month),
+                      textAlign: TextAlign.center,
                       style: const TextStyle(
-                          fontSize: 13, color: AppTheme.textPrimary),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary),
                     ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.chevron_right,
+                        color: AppTheme.textSecondary),
+                    onPressed: () => _monthPageCtrl.nextPage(
+                        duration: const Duration(milliseconds: 300),
+                        curve: Curves.easeInOut),
                   ),
                 ]),
               ),
-            ),
-          const Divider(height: 8),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTimeline(List<Event> timedEvents) {
-    const hourH = 64.0;
-    const labelW = 52.0;
-    const totalH = 24 * hourH;
-
-    final lanes = _assignLanes(timedEvents);
-    final numLanes = lanes.isEmpty ? 1 : lanes.map((l) => l.lane).reduce(max) + 1;
-
-    final now = DateTime.now();
-    final isToday = _isSameDay(_selectedDay, now);
-    final currentMins =
-        isToday ? now.hour * 60.0 + now.minute : null;
-
-    return SingleChildScrollView(
-      controller: _timelineScrollCtrl,
-      child: SizedBox(
-        height: totalH + 24,
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Hour labels
-            SizedBox(
-              width: labelW,
-              height: totalH,
-              child: Stack(
-                children: List.generate(
-                  24,
-                  (h) => Positioned(
-                    top: h * hourH - 7,
-                    left: 0,
-                    right: 4,
-                    child: Text(
-                      '${h.toString().padLeft(2, '0')}:00',
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                          fontSize: 10, color: AppTheme.textLight),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
-            // Grid + events
-            Expanded(
-              child: LayoutBuilder(builder: (ctx, constraints) {
-                final availW = constraints.maxWidth;
-                final laneW = availW / numLanes;
-
-                return SizedBox(
-                  height: totalH,
-                  child: Stack(children: [
-                    // Hour lines
-                    ...List.generate(
-                        24,
-                        (h) => Positioned(
-                              top: h * hourH,
-                              left: 0,
-                              right: 0,
-                              height: 0.5,
-                              child: ColoredBox(color: AppTheme.divider),
-                            )),
-                    // Half-hour lines
-                    ...List.generate(
-                        24,
-                        (h) => Positioned(
-                              top: h * hourH + hourH / 2,
-                              left: 0,
-                              right: 0,
-                              height: 0.5,
-                              child: ColoredBox(
-                                  color: AppTheme.divider
-                                      .withValues(alpha: 0.5)),
-                            )),
-
-                    // Event blocks
-                    ...lanes.map((lane) {
-                      final e = lane.event;
-                      final startMin = e.startTimeMinutes!.toDouble();
-                      final endMin =
-                          (e.endTimeMinutes ?? (e.startTimeMinutes! + 60))
-                              .toDouble();
-                      final top = startMin / 60 * hourH;
-                      final h = ((endMin - startMin) / 60 * hourH)
-                          .clamp(22.0, totalH);
-                      return Positioned(
-                        top: top,
-                        left: lane.lane * laneW,
-                        width: laneW,
-                        height: h,
-                        child: GestureDetector(
-                          onTap: () =>
-                              _navigateTo(EventFormScreen(event: e)),
-                          child: Container(
-                            margin: const EdgeInsets.fromLTRB(2, 1, 4, 1),
-                            decoration: BoxDecoration(
-                              color: e.displayColor,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            padding:
-                                const EdgeInsets.fromLTRB(7, 4, 4, 4),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(e.title,
-                                    style: const TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w700,
-                                        color: Colors.white),
-                                    maxLines: h > 42 ? 2 : 1,
-                                    overflow: TextOverflow.ellipsis),
-                                if (h > 34)
-                                  Text(e.timeDisplay,
-                                      style: const TextStyle(
-                                          fontSize: 10,
-                                          color: Colors.white70)),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                    }),
-
-                    // Current time line
-                    if (currentMins != null)
-                      Positioned(
-                        top: currentMins / 60 * hourH,
-                        left: 0,
-                        right: 0,
-                        child: Row(children: [
-                          Container(
-                            width: 8,
-                            height: 8,
-                            decoration: const BoxDecoration(
-                                color: Colors.red,
-                                shape: BoxShape.circle),
-                          ),
-                          Expanded(
-                              child: Container(
-                                  height: 1.5, color: Colors.red)),
-                        ]),
-                      ),
-
-                    if (timedEvents.isEmpty)
-                      Positioned(
-                        top: 180,
-                        left: 0,
-                        right: 0,
-                        child: Center(
-                          child: Text('시간이 지정된 일정이 없어요',
-                              style: TextStyle(
-                                  fontSize: 13,
-                                  color: AppTheme.textLight)),
-                        ),
-                      ),
-                  ]),
-                );
-              }),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  List<_LaneEvent> _assignLanes(List<Event> events) {
-    if (events.isEmpty) return [];
-    final sorted = [...events]
-      ..sort((a, b) => a.startTimeMinutes!.compareTo(b.startTimeMinutes!));
-    final laneEnds = <int>[];
-    final result = <_LaneEvent>[];
-    for (final e in sorted) {
-      final start = e.startTimeMinutes!;
-      final end = e.endTimeMinutes ?? (start + 60);
-      int lane = laneEnds.indexWhere((le) => le <= start);
-      if (lane == -1) {
-        lane = laneEnds.length;
-        laneEnds.add(end);
-      } else {
-        laneEnds[lane] = end;
-      }
-      result.add(_LaneEvent(event: e, lane: lane));
-    }
-    return result;
-  }
-
-  // ── Month View — Custom with Spanning Bars ─────────────────────────────────
-
-  Widget _buildMonthView() {
-    final year = _focusedDay.year;
-    final month = _focusedDay.month;
-    final weeks = _buildWeeks(year, month);
-    final hasContent = _selectedEvents.isNotEmpty || _selectedDiary != null;
-
-    return CustomScrollView(
-      slivers: [
-        SliverToBoxAdapter(
-          child: Container(
-            color: AppTheme.surface,
-            child: Column(children: [
-              // Month navigation
-              Row(children: [
-                IconButton(
-                  icon: const Icon(Icons.chevron_left,
-                      color: AppTheme.textSecondary),
-                  onPressed: () => setState(() => _focusedDay =
-                      DateTime(_focusedDay.year, _focusedDay.month - 1, 1)),
-                ),
-                Expanded(
-                  child: Text(
-                    _fmtMonthYear(year, month),
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        color: AppTheme.textPrimary),
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.chevron_right,
-                      color: AppTheme.textSecondary),
-                  onPressed: () => setState(() => _focusedDay =
-                      DateTime(_focusedDay.year, _focusedDay.month + 1, 1)),
-                ),
-              ]),
-              _buildDowHeader(),
-              const Divider(height: 1),
-              ...weeks.map((week) {
-                final placed = _computeWeekLayout(week);
-                return _buildWeekRow(week, placed);
-              }),
+              SizedBox(height: 28, child: _buildDowHeader()),
             ]),
           ),
-        ),
-        SliverToBoxAdapter(child: const Divider(height: 1)),
-        SliverToBoxAdapter(child: _buildSelectedBar()),
-        if (!hasContent)
-          const SliverFillRemaining(
-            hasScrollBody: false,
-            child: _EmptyDayState(),
-          )
-        else
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(14, 10, 14, 80),
-            sliver: SliverList.list(
-              children: [
-                ..._selectedEvents.map((e) => Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: _EventCard(
-                        event: e,
-                        onTap: () =>
-                            _navigateTo(EventFormScreen(event: e)),
-                      ),
-                    )),
-                if (_selectedDiary != null)
-                  _DiaryPreviewCard(
-                    diary: _selectedDiary!,
-                    onTap: () =>
-                        _navigateTo(DiaryFormScreen(date: _selectedDay)),
-                  ),
-              ],
-            ),
+          const Divider(height: 1),
+          // Calendar grid — height follows finger in real-time
+          AnimatedBuilder(
+            animation: _monthSizeCtrl,
+            builder: (_, child) {
+              final gridH =
+                  compactH + (expandH - compactH) * _monthSizeCtrl.value;
+              return SizedBox(
+                height: gridH,
+                child: PageView.builder(
+                  controller: _monthPageCtrl,
+                  itemBuilder: (_, page) =>
+                      _buildMonthPage(_monthForPage(page)),
+                  onPageChanged: (page) =>
+                      setState(() => _focusedDay = _monthForPage(page)),
+                ),
+              );
+            },
           ),
-      ],
-    );
+          // Compact-mode: show selected day's events below the grid
+          if (_monthMode == _MonthMode.compact) ...[
+            const Divider(height: 1),
+            _buildSelectedBar(),
+            Expanded(
+              child: _buildBottomPanel(
+                  _selectedEvents.isNotEmpty || _selectedDiary != null),
+            ),
+          ],
+        ]),
+      );
+    });
   }
 
-  // ── Week View — 1-week custom with Spanning Bars ───────────────────────────
+  Widget _buildMonthPage(DateTime date) {
+    final weeks = _buildWeeks(date.year, date.month);
+    final isCompact = _monthSizeCtrl.value < 0.5;
+    if (isCompact) {
+      return Column(
+        children: weeks.map((week) {
+          final placed = _computeWeekLayout(week);
+          return _buildCompactWeekRow(week, placed, 48.0, date.month);
+        }).toList(),
+      );
+    }
+    return LayoutBuilder(builder: (_, constraints) {
+      final rowH = constraints.maxHeight / weeks.length;
+      return Column(
+        children: weeks.map((week) {
+          final placed = _computeWeekLayout(week);
+          return _buildWeekRow(week, placed, fixedRowH: rowH, focusedMonth: date.month);
+        }).toList(),
+      );
+    });
+  }
+
+  Widget _buildCompactWeekRow(
+      List<DateTime> week, List<_PlacedEvent> placed, double rowH,
+      [int? focusedMonth]) {
+    const dateCellH = 30.0;
+    const trackH = 4.0;
+    const trackGap = 2.0;
+    const maxTracks = 4;
+    final today = DateTime.now();
+
+    return LayoutBuilder(builder: (_, constraints) {
+      final cellW = constraints.maxWidth / 7;
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapUp: (details) {
+          if (_isDragging) return;
+          final col =
+              (details.localPosition.dx / cellW).floor().clamp(0, 6);
+          final day = week[col];
+          if (focusedMonth != null && day.month != focusedMonth) {
+            _monthPageCtrl.animateToPage(_pageForMonth(day),
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOut);
+            return;
+          }
+          if (_isSameDay(day, _selectedDay)) {
+            _showModeSelection(day);
+          } else {
+            _onDaySelected(day, day);
+          }
+        },
+        onLongPressStart: (details) {
+          final col =
+              (details.localPosition.dx / cellW).floor().clamp(0, 6);
+          final day = week[col];
+          if (focusedMonth != null && day.month != focusedMonth) return;
+          HapticFeedback.heavyImpact();
+          setState(() {
+            _isDragging = true;
+            _dragStartDay = day;
+            _dragEndDay = day;
+          });
+        },
+        onLongPressMoveUpdate: (details) {
+          if (!_isDragging) return;
+          final col =
+              (details.localPosition.dx / cellW).floor().clamp(0, 6);
+          setState(() => _dragEndDay = week[col]);
+        },
+        onLongPressEnd: (_) => _endDragSelect(),
+        onLongPressCancel: () => setState(() {
+          _isDragging = false;
+          _dragStartDay = null;
+          _dragEndDay = null;
+        }),
+        child: SizedBox(
+          height: rowH,
+          child: Stack(children: [
+            // Date numbers
+            Row(
+              children: week.asMap().entries.map((entry) {
+                final i = entry.key;
+                final day = entry.value;
+                final isOutOfMonth =
+                    focusedMonth != null && day.month != focusedMonth;
+                final isSel = _isSameDay(day, _selectedDay);
+                final isToday = _isSameDay(day, today);
+                final hasDiary =
+                    _diaryByDate.containsKey(Diary.keyFrom(day));
+                final isInDrag = _isInDragRange(day);
+                return Expanded(
+                  child: Stack(children: [
+                    Container(
+                      height: dateCellH,
+                      color: (isInDrag || isSel) ? AppTheme.primaryLight : null,
+                      child: Center(
+                        child: Container(
+                          width: 24,
+                          height: 24,
+                          decoration: isToday
+                              ? BoxDecoration(
+                                  color: AppTheme.primary,
+                                  shape: BoxShape.circle,
+                                  border: hasDiary
+                                      ? Border.all(
+                                          color: AppTheme.diaryAccent,
+                                          width: 1.5)
+                                      : null,
+                                )
+                              : hasDiary
+                                  ? BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                          color: AppTheme.diaryAccent,
+                                          width: 1.5),
+                                    )
+                                  : null,
+                          child: Center(
+                            child: Text(
+                              '${day.day}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: (isToday || isSel || isInDrag)
+                                    ? FontWeight.w700
+                                    : FontWeight.w400,
+                                color: isToday
+                                    ? Colors.white
+                                    : isOutOfMonth
+                                        ? AppTheme.textLight
+                                        : i == 0
+                                            ? Colors.red.shade500
+                                            : i == 6
+                                                ? AppTheme.primary
+                                                : AppTheme.textPrimary,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ]),
+                );
+              }).toList(),
+            ),
+            // Thin colored bars (no text)
+            ...placed.where((p) => p.track < maxTracks).map((p) {
+              final left =
+                  p.startCol * cellW + (p.clipLeft ? 0 : 1);
+              final right = constraints.maxWidth -
+                  (p.endCol + 1) * cellW +
+                  (p.clipRight ? 0 : 1);
+              final top =
+                  dateCellH + p.track * (trackH + trackGap);
+              return Positioned(
+                left: left,
+                right: right,
+                top: top,
+                height: trackH,
+                child: GestureDetector(
+                  onTap: () =>
+                      _navigateTo(EventFormScreen(event: p.event)),
+                  child: p.event.isMultiDay
+                      ? _buildMultiDayLine(p, trackH)
+                      : Container(
+                          decoration: BoxDecoration(
+                            color: p.event.displayColor,
+                            borderRadius: BorderRadius.horizontal(
+                              left: p.clipLeft
+                                  ? Radius.zero
+                                  : const Radius.circular(2),
+                              right: p.clipRight
+                                  ? Radius.zero
+                                  : const Radius.circular(2),
+                            ),
+                          ),
+                        ),
+                ),
+              );
+            }),
+          ]),
+        ),
+      );
+    });
+  }
+
+  // ── Week View ──────────────────────────────────────────────────────────────
 
   Widget _buildWeekView() {
-    final ws = _focusedDay.subtract(Duration(days: _focusedDay.weekday - 1));
-    final week =
-        List<DateTime?>.generate(7, (i) => ws.add(Duration(days: i)));
-    final placed = _computeWeekLayout(week);
+    // Fixed height for week row: dateCellH=34 + 3 tracks*(18+2) + 4 = 98
+    const weekRowH = 98.0;
+    final ws = _focusedDay.subtract(Duration(days: _focusedDay.weekday % 7));
+    final we = ws.add(const Duration(days: 6));
     final hasContent = _selectedEvents.isNotEmpty || _selectedDiary != null;
 
     return Column(children: [
       Container(
         color: AppTheme.surface,
         child: Column(children: [
-          // Week navigation
           Row(children: [
             IconButton(
               icon: const Icon(Icons.chevron_left,
                   color: AppTheme.textSecondary),
-              onPressed: () {
-                final prev = _focusedDay.subtract(const Duration(days: 7));
-                setState(() {
-                  _focusedDay = prev;
-                  _selectedDay = prev;
-                  _selectedEvents =
-                      _eventsForDay(_selectedDay, _allEvents);
-                  _selectedDiary =
-                      _diaryByDate[Diary.keyFrom(_selectedDay)];
-                });
-              },
+              onPressed: () => _weekPageCtrl.previousPage(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut),
             ),
             Expanded(
               child: Text(
-                _fmtWeekRange(ws, ws.add(const Duration(days: 6))),
+                _fmtWeekRange(ws, we),
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                     fontSize: 14,
@@ -719,22 +743,35 @@ class _CalendarScreenState extends State<CalendarScreen> {
             IconButton(
               icon: const Icon(Icons.chevron_right,
                   color: AppTheme.textSecondary),
-              onPressed: () {
-                final next = _focusedDay.add(const Duration(days: 7));
+              onPressed: () => _weekPageCtrl.nextPage(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut),
+            ),
+          ]),
+          SizedBox(height: 28, child: _buildDowHeader()),
+          const Divider(height: 1),
+          SizedBox(
+            height: weekRowH,
+            child: PageView.builder(
+              controller: _weekPageCtrl,
+              itemBuilder: (_, page) {
+                final weekStart = _weekStartForPage(page);
+                final week = List<DateTime>.generate(
+                    7, (i) => weekStart.add(Duration(days: i)));
+                final placed = _computeWeekLayout(week);
+                return _buildWeekRow(week, placed, fixedRowH: weekRowH);
+              },
+              onPageChanged: (page) {
+                final ws = _weekStartForPage(page);
                 setState(() {
-                  _focusedDay = next;
-                  _selectedDay = next;
-                  _selectedEvents =
-                      _eventsForDay(_selectedDay, _allEvents);
-                  _selectedDiary =
-                      _diaryByDate[Diary.keyFrom(_selectedDay)];
+                  _focusedDay = ws;
+                  _selectedDay = ws;
+                  _selectedEvents = _eventsForDay(ws, _allEvents);
+                  _selectedDiary = _diaryByDate[Diary.keyFrom(ws)];
                 });
               },
             ),
-          ]),
-          _buildDowHeader(),
-          const Divider(height: 1),
-          _buildWeekRow(week, placed),
+          ),
         ]),
       ),
       const Divider(height: 1),
@@ -745,36 +782,40 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   // ── Shared calendar helpers ────────────────────────────────────────────────
 
-  List<List<DateTime?>> _buildWeeks(int year, int month) {
+  List<List<DateTime>> _buildWeeks(int year, int month) {
     final first = DateTime(year, month, 1);
     final daysInMonth = DateTime(year, month + 1, 0).day;
-    final offset = first.weekday - 1; // Mon=0
+    final offset = first.weekday % 7; // Sun=0, Mon=1 … Sat=6
 
-    final all = <DateTime?>[
-      ...List.filled(offset, null),
-      ...List.generate(daysInMonth, (i) => DateTime(year, month, i + 1)),
-    ];
-    while (all.length % 7 != 0) { all.add(null); }
+    final all = <DateTime>[];
+    for (int i = offset; i > 0; i--) {
+      all.add(first.subtract(Duration(days: i)));
+    }
+    for (int i = 1; i <= daysInMonth; i++) {
+      all.add(DateTime(year, month, i));
+    }
+    int trailing = 1;
+    while (all.length % 7 != 0) {
+      all.add(DateTime(year, month, daysInMonth + trailing++));
+    }
     return [for (int i = 0; i < all.length; i += 7) all.sublist(i, i + 7)];
   }
 
   Widget _buildDowHeader() {
-    const labels = ['월', '화', '수', '목', '금', '토', '일'];
+    const labels = ['일', '월', '화', '수', '목', '금', '토'];
     return Row(
       children: labels.asMap().entries.map((e) {
         final i = e.key;
         return Expanded(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Center(
             child: Text(e.value,
-                textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
-                  color: i == 5
-                      ? AppTheme.primary
+                  color: i == 0
+                      ? Colors.red.shade400
                       : i == 6
-                          ? Colors.red.shade400
+                          ? AppTheme.primary
                           : AppTheme.textSecondary,
                 )),
           ),
@@ -783,8 +824,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  Widget _buildWeekRow(List<DateTime?> week, List<_PlacedEvent> placed) {
-    const dateCellH = 34.0;
+  Widget _buildWeekRow(List<DateTime> week, List<_PlacedEvent> placed,
+      {double? fixedRowH, int? focusedMonth}) {
     const trackH = 18.0;
     const trackGap = 2.0;
     const maxTracks = 3;
@@ -793,8 +834,17 @@ class _CalendarScreenState extends State<CalendarScreen> {
     final maxTrack =
         placed.isEmpty ? -1 : placed.map((p) => p.track).reduce(max);
     final visibleTracks = min(maxTrack + 1, maxTracks);
-    final rowH =
-        dateCellH + visibleTracks * (trackH + trackGap) + bottomPad;
+
+    final double dateCellH;
+    final double rowH;
+    if (fixedRowH != null) {
+      rowH = fixedRowH;
+      dateCellH = (rowH - visibleTracks * (trackH + trackGap) - bottomPad)
+          .clamp(28.0, double.infinity);
+    } else {
+      dateCellH = 34.0;
+      rowH = dateCellH + visibleTracks * (trackH + trackGap) + bottomPad;
+    }
     final today = DateTime.now();
 
     return LayoutBuilder(builder: (ctx, constraints) {
@@ -802,11 +852,46 @@ class _CalendarScreenState extends State<CalendarScreen> {
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTapUp: (details) {
+          if (_isDragging) return;
           final col =
               (details.localPosition.dx / cellW).floor().clamp(0, 6);
           final day = week[col];
-          if (day != null) _onDaySelected(day, day);
+          if (focusedMonth != null && day.month != focusedMonth) {
+            _monthPageCtrl.animateToPage(_pageForMonth(day),
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOut);
+            return;
+          }
+          if (_isSameDay(day, _selectedDay)) {
+            _showModeSelection(day);
+          } else {
+            _onDaySelected(day, day);
+          }
         },
+        onLongPressStart: (details) {
+          final col =
+              (details.localPosition.dx / cellW).floor().clamp(0, 6);
+          final day = week[col];
+          if (focusedMonth != null && day.month != focusedMonth) return;
+          HapticFeedback.heavyImpact();
+          setState(() {
+            _isDragging = true;
+            _dragStartDay = day;
+            _dragEndDay = day;
+          });
+        },
+        onLongPressMoveUpdate: (details) {
+          if (!_isDragging) return;
+          final col =
+              (details.localPosition.dx / cellW).floor().clamp(0, 6);
+          setState(() => _dragEndDay = week[col]);
+        },
+        onLongPressEnd: (_) => _endDragSelect(),
+        onLongPressCancel: () => setState(() {
+          _isDragging = false;
+          _dragStartDay = null;
+          _dragEndDay = null;
+        }),
         child: SizedBox(
           height: rowH,
           child: Stack(clipBehavior: Clip.none, children: [
@@ -815,46 +900,64 @@ class _CalendarScreenState extends State<CalendarScreen> {
               children: week.asMap().entries.map((entry) {
                 final i = entry.key;
                 final day = entry.value;
-                if (day == null) {
-                  return Expanded(
-                      child: SizedBox(height: dateCellH));
-                }
+                final isOutOfMonth =
+                    focusedMonth != null && day.month != focusedMonth;
                 final isSel = _isSameDay(day, _selectedDay);
                 final isToday = _isSameDay(day, today);
+                final hasDiary =
+                    _diaryByDate.containsKey(Diary.keyFrom(day));
+                final isInDrag = _isInDragRange(day);
                 return Expanded(
-                  child: Container(
-                    height: dateCellH,
-                    color: isSel ? AppTheme.primaryLight : null,
-                    child: Center(
-                      child: Container(
-                        width: 26,
-                        height: 26,
-                        decoration: isToday
-                            ? const BoxDecoration(
-                                color: AppTheme.primary,
-                                shape: BoxShape.circle)
-                            : null,
-                        child: Center(
-                          child: Text(
-                            '${day.day}',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: (isToday || isSel)
-                                  ? FontWeight.w700
-                                  : FontWeight.w400,
-                              color: isToday
-                                  ? Colors.white
-                                  : i == 5
-                                      ? AppTheme.primary
-                                      : i == 6
-                                          ? Colors.red.shade500
-                                          : AppTheme.textPrimary,
+                  child: Stack(children: [
+                    Container(
+                      height: dateCellH,
+                      color: (isInDrag || isSel) ? AppTheme.primaryLight : null,
+                      child: Center(
+                        child: Container(
+                          width: 26,
+                          height: 26,
+                          decoration: isToday
+                              ? BoxDecoration(
+                                  color: AppTheme.primary,
+                                  shape: BoxShape.circle,
+                                  border: hasDiary
+                                      ? Border.all(
+                                          color: AppTheme.diaryAccent,
+                                          width: 1.5)
+                                      : null,
+                                )
+                              : hasDiary
+                                  ? BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                          color: AppTheme.diaryAccent,
+                                          width: 1.5),
+                                    )
+                                  : null,
+                          child: Center(
+                            child: Text(
+                              '${day.day}',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: (isToday || isSel || isInDrag)
+                                    ? FontWeight.w700
+                                    : FontWeight.w400,
+                                color: isToday
+                                    ? Colors.white
+                                    : isOutOfMonth
+                                        ? AppTheme.textLight
+                                        : i == 0
+                                            ? Colors.red.shade500
+                                            : i == 6
+                                                ? AppTheme.primary
+                                                : AppTheme.textPrimary,
+                              ),
                             ),
                           ),
                         ),
                       ),
                     ),
-                  ),
+                  ]),
                 );
               }).toList(),
             ),
@@ -884,7 +987,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
             // "+N more" overflow
             ...List.generate(7, (col) {
               final day = week[col];
-              if (day == null) return const SizedBox.shrink();
+              if (focusedMonth != null && day.month != focusedMonth) {
+                return const SizedBox.shrink();
+              }
               final overflow = placed
                   .where((p) =>
                       p.track >= maxTracks &&
@@ -913,36 +1018,20 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   Widget _buildSelectedBar() {
     return Container(
-      color: AppTheme.surface,
+      color: AppTheme.background,
       padding:
           const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(children: [
-        Text(_fmtSelectedDate(_selectedDay),
-            style: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textSecondary)),
-        const Spacer(),
-        if (_selectedEvents.isNotEmpty)
-          Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            decoration: BoxDecoration(
-              color: AppTheme.primaryLight,
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Text('일정 ${_selectedEvents.length}',
-                style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: AppTheme.primary)),
-          ),
-      ]),
+      child: Text(_fmtSelectedDate(_selectedDay),
+          style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.textSecondary)),
     );
   }
 
   Widget _buildEventBar(_PlacedEvent p) {
-    final isTimed = !p.event.isAllDay && !p.event.isMultiDay;
+    if (p.event.isMultiDay) return _buildMultiDayLine(p, 18.0, showText: true);
+    final isTimed = !p.event.isAllDay;
     final radius = BorderRadius.horizontal(
       left: p.clipLeft ? Radius.zero : const Radius.circular(4),
       right: p.clipRight ? Radius.zero : const Radius.circular(4),
@@ -986,21 +1075,64 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
+  Widget _buildMultiDayLine(_PlacedEvent p, double trackH, {bool showText = false}) {
+    const lineH = 2.5;
+    final color = p.event.displayColor;
+    return Stack(children: [
+      Positioned(
+        left: p.clipLeft ? 0.0 : trackH / 2,
+        right: p.clipRight ? 0.0 : trackH / 2,
+        top: (trackH - lineH) / 2,
+        height: lineH,
+        child: ColoredBox(color: color),
+      ),
+      if (!p.clipLeft)
+        Positioned(
+          left: 0, top: 0, width: trackH, height: trackH,
+          child: DecoratedBox(
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        ),
+      if (!p.clipRight)
+        Positioned(
+          right: 0, top: 0, width: trackH, height: trackH,
+          child: DecoratedBox(
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        ),
+      if (showText)
+        Positioned.fill(
+          left: p.clipLeft ? 4.0 : trackH + 2.0,
+          right: p.clipRight ? 4.0 : trackH + 2.0,
+          child: Center(
+            child: Container(
+              color: AppTheme.background,
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Text(
+                p.event.title,
+                style: TextStyle(
+                    fontSize: 10, color: color, fontWeight: FontWeight.w700),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+            ),
+          ),
+        ),
+    ]);
+  }
+
   // ── Week layout algorithm ──────────────────────────────────────────────────
 
   static DateTime _d(DateTime dt) =>
       DateTime(dt.year, dt.month, dt.day);
 
-  List<_PlacedEvent> _computeWeekLayout(List<DateTime?> week) {
-    final realDays = week.whereType<DateTime>().toList();
-    if (realDays.isEmpty) return [];
-    final ws = _d(realDays.first);
-    final we = _d(realDays.last);
+  List<_PlacedEvent> _computeWeekLayout(List<DateTime> week) {
+    if (week.isEmpty) return [];
+    final ws = _d(week.first);
+    final we = _d(week.last);
 
     final candidates = <Event>[];
     for (final event in _allEvents) {
       if (event.isRecurring) {
-        if (realDays.any((d) => event.occursOn(d))) candidates.add(event);
+        if (week.any((d) => event.occursOn(d))) candidates.add(event);
       } else {
         final s = _d(event.startDate);
         final e = _d(event.endDate);
@@ -1025,7 +1157,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
       if (event.isRecurring) {
         for (int col = 0; col < 7; col++) {
           final day = week[col];
-          if (day == null || !event.occursOn(day)) continue;
+          if (!event.occursOn(day)) continue;
           final track = _findTrack(trackRanges, col, col);
           trackRanges.putIfAbsent(track, () => []).add([col, col]);
           placed.add(_PlacedEvent(
@@ -1069,8 +1201,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
   // ── Year View ──────────────────────────────────────────────────────────────
 
   Widget _buildYearView() {
-    final year = _focusedDay.year;
     return Column(children: [
+      // Fixed navigation header
       Container(
         color: AppTheme.surface,
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
@@ -1080,16 +1212,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
             IconButton(
               icon: const Icon(Icons.chevron_left,
                   color: AppTheme.textSecondary),
-              onPressed: () {
-                setState(() {
-                  _focusedDay = DateTime(
-                      _focusedDay.year - 1, _focusedDay.month);
-                  _eventDateSetYear = -1;
-                });
-                _ensureEventDateSet();
-              },
+              onPressed: () => _yearPageCtrl.previousPage(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut),
             ),
-            Text('$year년',
+            Text('${_focusedDay.year}년',
                 style: const TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.w700,
@@ -1097,44 +1224,51 @@ class _CalendarScreenState extends State<CalendarScreen> {
             IconButton(
               icon: const Icon(Icons.chevron_right,
                   color: AppTheme.textSecondary),
-              onPressed: () {
-                setState(() {
-                  _focusedDay = DateTime(
-                      _focusedDay.year + 1, _focusedDay.month);
-                  _eventDateSetYear = -1;
-                });
-                _ensureEventDateSet();
-              },
+              onPressed: () => _yearPageCtrl.nextPage(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut),
             ),
           ],
         ),
       ),
       const Divider(height: 1),
+      // Sliding year grid — follows finger
       Expanded(
-        child: GridView.builder(
-          padding: const EdgeInsets.all(12),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 3,
-            childAspectRatio: 0.78,
-            crossAxisSpacing: 10,
-            mainAxisSpacing: 10,
-          ),
-          itemCount: 12,
-          itemBuilder: (ctx, index) {
-            final month = index + 1;
-            return _MiniMonth(
-              year: year,
-              month: month,
-              eventDateSet: _eventDateSet,
-              diaryByDate: _diaryByDate,
-              isCurrentMonth: DateTime.now().year == year &&
-                  DateTime.now().month == month,
-              onTap: () {
-                final d = DateTime(year, month, 1);
-                _onDaySelected(d, d);
-                _setViewMode(_ViewMode.month);
+        child: PageView.builder(
+          controller: _yearPageCtrl,
+          itemBuilder: (_, page) {
+            final year = _monthOrigin.year + (page - _kPageMid);
+            return GridView.builder(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
+              gridDelegate:
+                  const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                childAspectRatio: 0.78,
+                crossAxisSpacing: 10,
+                mainAxisSpacing: 10,
+              ),
+              itemCount: 12,
+              itemBuilder: (ctx, index) {
+                final month = index + 1;
+                return _MiniMonth(
+                  year: year,
+                  month: month,
+                  isCurrentMonth: DateTime.now().year == year &&
+                      DateTime.now().month == month,
+                  onTap: () {
+                    final d = DateTime(year, month, 1);
+                    _onDaySelected(d, d);
+                    _setViewMode(_ViewMode.month);
+                  },
+                );
               },
             );
+          },
+          onPageChanged: (page) {
+            final year = _monthOrigin.year + (page - _kPageMid);
+            setState(() {
+              _focusedDay = DateTime(year, _focusedDay.month);
+            });
           },
         ),
       ),
@@ -1169,16 +1303,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
 class _MiniMonth extends StatelessWidget {
   final int year, month;
-  final Set<String> eventDateSet;
-  final Map<String, Diary> diaryByDate;
   final bool isCurrentMonth;
   final VoidCallback onTap;
 
   const _MiniMonth({
     required this.year,
     required this.month,
-    required this.eventDateSet,
-    required this.diaryByDate,
     required this.isCurrentMonth,
     required this.onTap,
   });
@@ -1187,13 +1317,13 @@ class _MiniMonth extends StatelessWidget {
     '1월', '2월', '3월', '4월', '5월', '6월',
     '7월', '8월', '9월', '10월', '11월', '12월',
   ];
-  static const _dowLabels = ['월', '화', '수', '목', '금', '토', '일'];
+  static const _dowLabels = ['일', '월', '화', '수', '목', '금', '토'];
 
   @override
   Widget build(BuildContext context) {
     final firstDay = DateTime(year, month, 1);
     final daysInMonth = DateTime(year, month + 1, 0).day;
-    final startOffset = firstDay.weekday - 1;
+    final startOffset = firstDay.weekday % 7;
     final today = DateTime.now();
 
     return GestureDetector(
@@ -1250,60 +1380,29 @@ class _MiniMonth extends StatelessWidget {
                   ...List.generate(daysInMonth, (i) {
                     final day = i + 1;
                     final date = DateTime(year, month, day);
-                    final dk = Diary.keyFrom(date);
-                    final hasEvent = eventDateSet.contains(dk);
-                    final hasDiary = diaryByDate.containsKey(dk);
                     final isToday = date.year == today.year &&
                         date.month == today.month &&
                         date.day == today.day;
-                    return Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Container(
-                          width: 14,
-                          height: 14,
-                          decoration: isToday
-                              ? const BoxDecoration(
-                                  color: AppTheme.primary,
-                                  shape: BoxShape.circle)
-                              : null,
-                          child: Center(
-                            child: Text('$day',
-                                style: TextStyle(
-                                  fontSize: 7,
-                                  color: isToday
-                                      ? Colors.white
-                                      : AppTheme.textPrimary,
-                                  fontWeight: isToday
-                                      ? FontWeight.w700
-                                      : FontWeight.w400,
-                                )),
-                          ),
-                        ),
-                        if (hasEvent || hasDiary)
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              if (hasEvent)
-                                Container(
-                                  width: 3,
-                                  height: 3,
-                                  margin: const EdgeInsets.only(right: 1),
-                                  decoration: const BoxDecoration(
-                                      color: AppTheme.primary,
-                                      shape: BoxShape.circle),
-                                ),
-                              if (hasDiary)
-                                Container(
-                                  width: 3,
-                                  height: 3,
-                                  decoration: const BoxDecoration(
-                                      color: AppTheme.diaryAccent,
-                                      shape: BoxShape.circle),
-                                ),
-                            ],
-                          ),
-                      ],
+                    return Container(
+                      width: 14,
+                      height: 14,
+                      decoration: isToday
+                          ? const BoxDecoration(
+                              color: AppTheme.primary,
+                              shape: BoxShape.circle)
+                          : null,
+                      child: Center(
+                        child: Text('$day',
+                            style: TextStyle(
+                              fontSize: 7,
+                              color: isToday
+                                  ? Colors.white
+                                  : AppTheme.textPrimary,
+                              fontWeight: isToday
+                                  ? FontWeight.w700
+                                  : FontWeight.w400,
+                            )),
+                      ),
                     );
                   }),
                 ],
@@ -1670,5 +1769,308 @@ class _DiaryPreviewCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+// ── Day Page Content (per-page StatefulWidget for PageView) ───────────────────
+
+class _DayPageContent extends StatefulWidget {
+  final DateTime day;
+  final List<Event> events;
+  final Diary? diary;
+  final void Function(Event) onEventTap;
+  final VoidCallback onDiaryTap;
+
+  const _DayPageContent({
+    super.key,
+    required this.day,
+    required this.events,
+    required this.diary,
+    required this.onEventTap,
+    required this.onDiaryTap,
+  });
+
+  @override
+  State<_DayPageContent> createState() => _DayPageContentState();
+}
+
+class _DayPageContentState extends State<_DayPageContent> {
+  late final ScrollController _scrollCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    final now = DateTime.now();
+    final isToday = _isSameDay(widget.day, now);
+    final mins = isToday ? now.hour * 60 + now.minute : 8 * 60;
+    _scrollCtrl = ScrollController(
+      initialScrollOffset: (mins / 60.0 * 64.0 - 80).clamp(0, double.infinity),
+    );
+  }
+
+  @override
+  void dispose() {
+    _scrollCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final banners =
+        widget.events.where((e) => e.isAllDay || e.isMultiDay).toList();
+    final timedEvents = widget.events
+        .where((e) => !e.isAllDay && !e.isMultiDay && e.startTimeMinutes != null)
+        .toList();
+
+    return Column(children: [
+      if (banners.isNotEmpty || widget.diary != null) _buildBanners(banners),
+      Expanded(child: _buildTimeline(timedEvents)),
+    ]);
+  }
+
+  Widget _buildBanners(List<Event> banners) {
+    return Container(
+      color: AppTheme.surface,
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ...banners.map((e) => GestureDetector(
+                onTap: () => widget.onEventTap(e),
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: e.displayColor,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.event_rounded,
+                        size: 13, color: Colors.white70),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(e.title,
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white),
+                          overflow: TextOverflow.ellipsis),
+                    ),
+                    Text(
+                        e.isAllDay
+                            ? '종일'
+                            : e.isMultiDay
+                                ? '여러 날'
+                                : '',
+                        style: const TextStyle(
+                            fontSize: 11, color: Colors.white70)),
+                  ]),
+                ),
+              )),
+          if (widget.diary != null)
+            GestureDetector(
+              onTap: widget.onDiaryTap,
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 4),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AppTheme.diaryAccentBg,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: AppTheme.diaryAccent),
+                ),
+                child: Row(children: [
+                  const Text('📓', style: TextStyle(fontSize: 13)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      widget.diary!.content,
+                      style: const TextStyle(
+                          fontSize: 13, color: AppTheme.textPrimary),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+          const Divider(height: 8),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTimeline(List<Event> timedEvents) {
+    const hourH = 64.0;
+    const labelW = 52.0;
+    const totalH = 24 * hourH;
+
+    final lanes = _assignLanes(timedEvents);
+    final numLanes =
+        lanes.isEmpty ? 1 : lanes.map((l) => l.lane).reduce(max) + 1;
+
+    final now = DateTime.now();
+    final isToday = _isSameDay(widget.day, now);
+    final currentMins = isToday ? now.hour * 60.0 + now.minute : null;
+
+    return SingleChildScrollView(
+      controller: _scrollCtrl,
+      child: SizedBox(
+        height: totalH + 88,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: labelW,
+              height: totalH,
+              child: Stack(
+                children: List.generate(
+                  24,
+                  (h) => Positioned(
+                    top: h * hourH - 7,
+                    left: 0,
+                    right: 4,
+                    child: Text(
+                      '${h.toString().padLeft(2, '0')}:00',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                          fontSize: 10, color: AppTheme.textLight),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Expanded(
+              child: LayoutBuilder(builder: (ctx, constraints) {
+                final availW = constraints.maxWidth;
+                final laneW = availW / numLanes;
+
+                return SizedBox(
+                  height: totalH,
+                  child: Stack(children: [
+                    ...List.generate(
+                        24,
+                        (h) => Positioned(
+                              top: h * hourH,
+                              left: 0,
+                              right: 0,
+                              height: 0.5,
+                              child: ColoredBox(color: AppTheme.divider),
+                            )),
+                    ...List.generate(
+                        24,
+                        (h) => Positioned(
+                              top: h * hourH + hourH / 2,
+                              left: 0,
+                              right: 0,
+                              height: 0.5,
+                              child: ColoredBox(
+                                  color:
+                                      AppTheme.divider.withValues(alpha: 0.5)),
+                            )),
+                    ...lanes.map((lane) {
+                      final e = lane.event;
+                      final startMin = e.startTimeMinutes!.toDouble();
+                      final endMin =
+                          (e.endTimeMinutes ?? (e.startTimeMinutes! + 60))
+                              .toDouble();
+                      final top = startMin / 60 * hourH;
+                      final h = ((endMin - startMin) / 60 * hourH)
+                          .clamp(22.0, totalH);
+                      return Positioned(
+                        top: top,
+                        left: lane.lane * laneW,
+                        width: laneW,
+                        height: h,
+                        child: GestureDetector(
+                          onTap: () => widget.onEventTap(e),
+                          child: Container(
+                            margin: const EdgeInsets.fromLTRB(2, 1, 4, 1),
+                            decoration: BoxDecoration(
+                              color: e.displayColor,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            padding: const EdgeInsets.fromLTRB(7, 4, 4, 4),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(e.title,
+                                    style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w700,
+                                        color: Colors.white),
+                                    maxLines: h > 42 ? 2 : 1,
+                                    overflow: TextOverflow.ellipsis),
+                                if (h > 34)
+                                  Text(e.timeDisplay,
+                                      style: const TextStyle(
+                                          fontSize: 10,
+                                          color: Colors.white70)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
+                    if (currentMins != null)
+                      Positioned(
+                        top: currentMins / 60 * hourH,
+                        left: 0,
+                        right: 0,
+                        child: Row(children: [
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                                color: Colors.red, shape: BoxShape.circle),
+                          ),
+                          Expanded(
+                              child:
+                                  Container(height: 1.5, color: Colors.red)),
+                        ]),
+                      ),
+                    if (timedEvents.isEmpty)
+                      const Positioned(
+                        top: 180,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: Text('시간이 지정된 일정이 없어요',
+                              style: TextStyle(
+                                  fontSize: 13, color: AppTheme.textLight)),
+                        ),
+                      ),
+                  ]),
+                );
+              }),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static List<_LaneEvent> _assignLanes(List<Event> events) {
+    if (events.isEmpty) return [];
+    final sorted = [...events]
+      ..sort((a, b) => a.startTimeMinutes!.compareTo(b.startTimeMinutes!));
+    final laneEnds = <int>[];
+    final result = <_LaneEvent>[];
+    for (final e in sorted) {
+      final start = e.startTimeMinutes!;
+      final end = e.endTimeMinutes ?? (start + 60);
+      int lane = laneEnds.indexWhere((le) => le <= start);
+      if (lane == -1) {
+        lane = laneEnds.length;
+        laneEnds.add(end);
+      } else {
+        laneEnds[lane] = end;
+      }
+      result.add(_LaneEvent(event: e, lane: lane));
+    }
+    return result;
   }
 }

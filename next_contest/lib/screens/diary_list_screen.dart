@@ -8,10 +8,10 @@ class DiaryListScreen extends StatefulWidget {
   const DiaryListScreen({super.key});
 
   @override
-  State<DiaryListScreen> createState() => _DiaryListScreenState();
+  State<DiaryListScreen> createState() => DiaryListScreenState();
 }
 
-class _DiaryListScreenState extends State<DiaryListScreen> {
+class DiaryListScreenState extends State<DiaryListScreen> {
   final _db = DatabaseService();
 
   List<Diary> _diaries = [];
@@ -28,6 +28,8 @@ class _DiaryListScreenState extends State<DiaryListScreen> {
     super.initState();
     _loadData();
   }
+
+  void refresh() => _loadData();
 
   Future<void> _loadData() async {
     final diaries = await _db.getAllDiaries();
@@ -117,6 +119,20 @@ class _DiaryListScreenState extends State<DiaryListScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('일기')),
+      floatingActionButton: FloatingActionButton.extended(
+        heroTag: 'diary_fab',
+        onPressed: () async {
+          final changed = await Navigator.push<bool>(
+            context,
+            MaterialPageRoute(
+              builder: (_) => DiaryFormScreen(date: DateTime.now()),
+            ),
+          );
+          if (changed == true) _loadData();
+        },
+        icon: const Icon(Icons.edit_rounded),
+        label: const Text('오늘 일기'),
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : Column(
@@ -153,7 +169,7 @@ class _DiaryListScreenState extends State<DiaryListScreen> {
                       ? const _EmptyState()
                       : ListView.builder(
                           padding:
-                              const EdgeInsets.fromLTRB(16, 12, 16, 80),
+                              const EdgeInsets.fromLTRB(16, 12, 16, 88),
                           itemCount: groupKeys.length,
                           itemBuilder: (ctx, gi) {
                             final groupKey = groupKeys[gi];

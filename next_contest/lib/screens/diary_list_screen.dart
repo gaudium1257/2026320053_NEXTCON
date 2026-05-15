@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/diary.dart';
 import '../services/database_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/date_utils.dart';
 import 'diary_form_screen.dart';
 
 class DiaryListScreen extends StatefulWidget {
@@ -15,13 +16,16 @@ class DiaryListScreenState extends State<DiaryListScreen> {
   final _db = DatabaseService();
 
   List<Diary> _diaries = [];
-  List<String> _months = [];             // 캐시: 월별 키 목록
-  List<Diary> _filtered = [];           // 캐시: 필터 결과
+  List<String> _months = []; // 캐시: 월별 키 목록
+  List<Diary> _filtered = []; // 캐시: 필터 결과
   Map<String, List<Diary>> _grouped = {}; // 캐시: 월별 그룹
 
   bool _loading = true;
   bool _hasMultipleYears = false;
   String? _selectedMonth;
+
+  // 성능 최적화: 데이터 로딩 취소 토큰
+  bool _isLoadingData = false;
 
   @override
   void initState() {
@@ -32,15 +36,28 @@ class DiaryListScreenState extends State<DiaryListScreen> {
   void refresh() => _loadData();
 
   Future<void> _loadData() async {
-    final diaries = await _db.getAllDiaries();
-    if (!mounted) return;
-    _applyData(diaries);
+    // 이미 로딩 중이면 중복 호출 방지
+    if (_isLoadingData) return;
+    _isLoadingData = true;
+
+    try {
+      final diaries = await _db.getAllDiaries();
+      if (!mounted) return;
+      _applyData(diaries);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('데이터를 불러오지 못했어요. 다시 시도해 주세요.')),
+      );
+    } finally {
+      _isLoadingData = false;
+    }
   }
 
   void _applyData(List<Diary> diaries) {
     final months = _extractMonths(diaries);
-    final month =
-        (months.contains(_selectedMonth)) ? _selectedMonth : null;
+    final month = (months.contains(_selectedMonth)) ? _selectedMonth : null;
     final hasMultipleYears =
         months.map((m) => m.split('-')[0]).toSet().length > 1;
     setState(() {
@@ -87,15 +104,6 @@ class DiaryListScreenState extends State<DiaryListScreen> {
     return map;
   }
 
-  String _fmtDateLabel(String dateKey) {
-    final parts = dateKey.split('-');
-    if (parts.length != 3) return dateKey;
-    final dt = DateTime(
-        int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
-    const wd = ['월', '화', '수', '목', '금', '토', '일'];
-    return '${dt.month}월 ${dt.day}일 ${wd[dt.weekday - 1]}요일';
-  }
-
   String _fmtChipLabel(String monthKey) {
     final parts = monthKey.split('-');
     if (parts.length < 2) return monthKey;
@@ -107,8 +115,8 @@ class DiaryListScreenState extends State<DiaryListScreen> {
     final changed = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
-          builder: (_) =>
-              DiaryFormScreen(date: Diary.dateFromKey(d.dateKey))),
+        builder: (_) => DiaryFormScreen(date: Diary.dateFromKey(d.dateKey)),
+      ),
     );
     if (changed == true) _loadData();
   }
@@ -119,19 +127,26 @@ class DiaryListScreenState extends State<DiaryListScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('일기')),
-      floatingActionButton: FloatingActionButton.extended(
-        heroTag: 'diary_fab',
-        onPressed: () async {
-          final changed = await Navigator.push<bool>(
-            context,
-            MaterialPageRoute(
-              builder: (_) => DiaryFormScreen(date: DateTime.now()),
-            ),
-          );
-          if (changed == true) _loadData();
-        },
-        icon: const Icon(Icons.edit_rounded),
-        label: const Text('오늘 일기'),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // 오늘 일기 메인 FAB
+          FloatingActionButton.extended(
+            heroTag: 'diary_fab',
+            onPressed: () async {
+              final changed = await Navigator.push<bool>(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => DiaryFormScreen(date: DateTime.now()),
+                ),
+              );
+              if (changed == true) _loadData();
+            },
+            icon: const Icon(Icons.edit_rounded),
+            label: const Text('오늘 일기'),
+          ),
+        ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
@@ -141,8 +156,7 @@ class DiaryListScreenState extends State<DiaryListScreen> {
                 if (_diaries.isNotEmpty)
                   Container(
                     color: AppTheme.surface,
-                    padding:
-                        const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
                     child: SizedBox(
                       height: 36,
                       child: ListView(
@@ -153,11 +167,13 @@ class DiaryListScreenState extends State<DiaryListScreen> {
                             selected: _selectedMonth == null,
                             onTap: () => _selectMonth(null),
                           ),
-                          ..._months.map((m) => _MonthChip(
-                                label: _fmtChipLabel(m),
-                                selected: _selectedMonth == m,
-                                onTap: () => _selectMonth(m),
-                              )),
+                          ..._months.map(
+                            (m) => _MonthChip(
+                              label: _fmtChipLabel(m),
+                              selected: _selectedMonth == m,
+                              onTap: () => _selectMonth(m),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -168,56 +184,61 @@ class DiaryListScreenState extends State<DiaryListScreen> {
                   child: _filtered.isEmpty
                       ? const _EmptyState()
                       : ListView.builder(
-                          padding:
-                              const EdgeInsets.fromLTRB(16, 12, 16, 88),
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 88),
                           itemCount: groupKeys.length,
                           itemBuilder: (ctx, gi) {
                             final groupKey = groupKeys[gi];
                             final diaries = _grouped[groupKey]!;
                             return Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment.start,
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Padding(
                                   padding: EdgeInsets.only(
-                                      top: gi == 0 ? 4 : 20,
-                                      bottom: 10),
-                                  child: Row(children: [
-                                    Container(
-                                      width: 3,
-                                      height: 16,
-                                      decoration: BoxDecoration(
-                                        color: AppTheme.diaryAccent,
-                                        borderRadius:
-                                            BorderRadius.circular(2),
+                                    top: gi == 0 ? 4 : 20,
+                                    bottom: 10,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        width: 3,
+                                        height: 16,
+                                        decoration: BoxDecoration(
+                                          color: AppTheme.diaryAccent,
+                                          borderRadius: BorderRadius.circular(
+                                            2,
+                                          ),
+                                        ),
                                       ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Text(groupKey,
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        groupKey,
                                         style: const TextStyle(
-                                            fontSize: 14,
-                                            fontWeight:
-                                                FontWeight.w700,
-                                            color:
-                                                AppTheme.textPrimary)),
-                                    const SizedBox(width: 8),
-                                    Text('${diaries.length}편',
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppTheme.textPrimary,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        '${diaries.length}편',
                                         style: const TextStyle(
-                                            fontSize: 12,
-                                            color:
-                                                AppTheme.textLight)),
-                                  ]),
+                                          fontSize: 12,
+                                          color: AppTheme.textLight,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                                ...diaries.map((d) => Padding(
-                                      padding: const EdgeInsets.only(
-                                          bottom: 10),
-                                      child: _DiaryCard(
-                                        diary: d,
-                                        dateLabel:
-                                            _fmtDateLabel(d.dateKey),
-                                        onTap: () => _openDiary(d),
-                                      ),
-                                    )),
+                                ...diaries.map(
+                                  (d) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 10),
+                                    child: _DiaryCard(
+                                      diary: d,
+                                      dateLabel: fmtShortKoreanDate(Diary.dateFromKey(d.dateKey)),
+                                      onTap: () => _openDiary(d),
+                                    ),
+                                  ),
+                                ),
                               ],
                             );
                           },
@@ -235,10 +256,11 @@ class _MonthChip extends StatelessWidget {
   final String label;
   final bool selected;
   final VoidCallback onTap;
-  const _MonthChip(
-      {required this.label,
-      required this.selected,
-      required this.onTap});
+  const _MonthChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -247,14 +269,12 @@ class _MonthChip extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         margin: const EdgeInsets.only(right: 8),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         decoration: BoxDecoration(
           color: selected ? AppTheme.primaryLight : AppTheme.surface,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color:
-                selected ? AppTheme.primary : AppTheme.divider,
+            color: selected ? AppTheme.primary : AppTheme.divider,
             width: selected ? 1.5 : 1,
           ),
         ),
@@ -262,11 +282,8 @@ class _MonthChip extends StatelessWidget {
           label,
           style: TextStyle(
             fontSize: 13,
-            fontWeight:
-                selected ? FontWeight.w600 : FontWeight.w400,
-            color: selected
-                ? AppTheme.primary
-                : AppTheme.textSecondary,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            color: selected ? AppTheme.primary : AppTheme.textSecondary,
           ),
         ),
       ),
@@ -305,61 +322,76 @@ class _DiaryCard extends StatelessWidget {
         ),
         child: IntrinsicHeight(
           child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-            Container(
-              width: 4,
-              decoration: const BoxDecoration(
-                color: AppTheme.diaryAccent,
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(14),
-                  bottomLeft: Radius.circular(14),
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                width: 4,
+                decoration: const BoxDecoration(
+                  color: AppTheme.diaryAccent,
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(14),
+                    bottomLeft: Radius.circular(14),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      if (diary.mood != null) ...[
-                        Text(diary.mood!,
-                            style: const TextStyle(fontSize: 16)),
-                        const SizedBox(width: 6),
-                      ] else ...[
-                        const Icon(Icons.auto_stories_outlined,
-                            size: 13, color: AppTheme.diaryAccent),
-                        const SizedBox(width: 5),
-                      ],
-                      Text(dateLabel,
-                          style: const TextStyle(
+              const SizedBox(width: 14),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          if (diary.mood != null) ...[
+                            Text(
+                              diary.mood!,
+                              style: const TextStyle(fontSize: 16),
+                            ),
+                            const SizedBox(width: 6),
+                          ] else ...[
+                            const Icon(
+                              Icons.auto_stories_outlined,
+                              size: 13,
+                              color: AppTheme.diaryAccent,
+                            ),
+                            const SizedBox(width: 5),
+                          ],
+                          Text(
+                            dateLabel,
+                            style: const TextStyle(
                               fontSize: 13,
                               fontWeight: FontWeight.w700,
-                              color: AppTheme.textPrimary)),
-                    ]),
-                    const SizedBox(height: 6),
-                    Text(
-                      diary.content,
-                      style: const TextStyle(
+                              color: AppTheme.textPrimary,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        diary.content,
+                        style: const TextStyle(
                           fontSize: 13,
                           color: AppTheme.textSecondary,
-                          height: 1.5),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
+                          height: 1.5,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            const Padding(
-              padding: EdgeInsets.only(right: 12),
-              child: Icon(Icons.chevron_right_rounded,
-                  size: 18, color: AppTheme.textLight),
-            ),
-          ]),
+              const Padding(
+                padding: EdgeInsets.only(right: 12),
+                child: Icon(
+                  Icons.chevron_right_rounded,
+                  size: 18,
+                  color: AppTheme.textLight,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -374,26 +406,38 @@ class _EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(
-          width: 72,
-          height: 72,
-          decoration: const BoxDecoration(
-              color: AppTheme.diaryAccentBg, shape: BoxShape.circle),
-          child: const Icon(Icons.auto_stories_outlined,
-              size: 34, color: AppTheme.diaryAccent),
-        ),
-        const SizedBox(height: 16),
-        const Text('아직 작성된 일기가 없어요',
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 72,
+            height: 72,
+            decoration: const BoxDecoration(
+              color: AppTheme.diaryAccentBg,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.auto_stories_outlined,
+              size: 34,
+              color: AppTheme.diaryAccent,
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            '아직 작성된 일기가 없어요',
             style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textPrimary)),
-        const SizedBox(height: 6),
-        const Text('캘린더에서 날짜를 탭해 일기를 써보세요',
-            style: TextStyle(
-                fontSize: 13, color: AppTheme.textLight)),
-      ]),
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            '아래 버튼으로 오늘 일기를 작성해 보세요.',
+            style: TextStyle(fontSize: 13, color: AppTheme.textLight),
+          ),
+        ],
+      ),
     );
   }
 }

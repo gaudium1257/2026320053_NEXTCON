@@ -5,7 +5,6 @@ class AppTheme {
   static const Color primary       = Color(0xFF7C5CFC); // 바이올렛 퍼플
   static const Color primaryDark   = Color(0xFF5B3DD8); // 딥 퍼플
   static const Color primaryLight  = Color(0xFFEDE8FF); // 연 라벤더
-  static const Color accent        = Color(0xFFF59E0B); // 웜 앰버 (일기 포인트)
   static const Color background    = Color(0xFFF8F7FC); // 아이보리·퍼플 크림
   static const Color surface       = Color(0xFFFFFFFF); // 카드/시트 순백
   static const Color diaryAccent   = Color(0xFFF59E0B); // 앰버
@@ -39,7 +38,7 @@ class AppTheme {
         primary: primary,
         onPrimary: Colors.white,
         primaryContainer: primaryLight,
-        secondary: accent,
+        secondary: diaryAccent,
         onSecondary: Colors.white,
         surface: surface,
         onSurface: textPrimary,

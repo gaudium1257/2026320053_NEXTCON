@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import '../utils/date_utils.dart';
 
 class Event {
-  String? id;
+  int? id;        // SQLite INTEGER PRIMARY KEY — was String? before
   String title;
   DateTime startDate;
   int? startTimeMinutes;
@@ -60,76 +61,104 @@ class Event {
   static String _fmtTime(TimeOfDay t) =>
       '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
-  static String dateKey(DateTime date) =>
-      '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+  /// 'yyyy-MM-dd' string for [date] — delegates to the shared utility.
+  static String dateKey(DateTime date) => dayKey(date);
 
   // ── SQLite ─────────────────────────────────────────────────────────────────
 
   Map<String, dynamic> toMap() {
     final map = <String, dynamic>{
       'title': title,
-      'startDate': dateKey(startDate),
+      'startDate': dayKey(startDate),
       'startTimeMinutes': startTimeMinutes,
-      'endDate': dateKey(endDate),
+      'endDate': dayKey(endDate),
       'endTimeMinutes': endTimeMinutes,
       'memo': memo,
       'isAllDay': isAllDay ? 1 : 0,
       'isRecurring': isRecurring ? 1 : 0,
       'recurrenceType': recurrenceType,
       'recurrenceEndDate':
-          recurrenceEndDate != null ? dateKey(recurrenceEndDate!) : null,
+          recurrenceEndDate != null ? dayKey(recurrenceEndDate!) : null,
       'color': colorValue,
     };
-    if (id != null) map['id'] = int.parse(id!);
+    if (id != null) map['id'] = id;
     return map;
   }
 
   factory Event.fromMap(Map<String, dynamic> map) {
-    return Event(
-      id: map['id']?.toString(),
-      title: map['title'] as String,
-      startDate: DateTime.parse(map['startDate'] as String),
-      startTimeMinutes: map['startTimeMinutes'] as int?,
-      endDate: DateTime.parse(map['endDate'] as String),
-      endTimeMinutes: map['endTimeMinutes'] as int?,
-      memo: map['memo'] as String?,
-      isAllDay: (map['isAllDay'] as int) == 1,
-      isRecurring: (map['isRecurring'] as int) == 1,
-      recurrenceType: map['recurrenceType'] as String?,
-      recurrenceEndDate: map['recurrenceEndDate'] != null
-          ? DateTime.parse(map['recurrenceEndDate'] as String)
-          : null,
-      colorValue: map['color'] as int?,
-    );
+    try {
+      final title = map['title'] as String?;
+      if (title == null || title.trim().isEmpty) {
+        throw FormatException('Event title cannot be null or empty');
+      }
+
+      final startDateStr = map['startDate'] as String?;
+      final endDateStr = map['endDate'] as String?;
+      if (startDateStr == null || endDateStr == null) {
+        throw FormatException('Event dates cannot be null');
+      }
+
+      final startDate = DateTime.parse(startDateStr);
+      final endDate = DateTime.parse(endDateStr);
+
+      if (endDate.isBefore(startDate)) {
+        throw FormatException('End date cannot be before start date');
+      }
+
+      final startTimeMinutes = map['startTimeMinutes'] as int?;
+      final endTimeMinutes = map['endTimeMinutes'] as int?;
+
+      // 시간 값 범위 검증
+      if (startTimeMinutes != null && (startTimeMinutes < 0 || startTimeMinutes >= 24 * 60)) {
+        throw FormatException('Invalid start time minutes');
+      }
+      if (endTimeMinutes != null && (endTimeMinutes < 0 || endTimeMinutes >= 24 * 60)) {
+        throw FormatException('Invalid end time minutes');
+      }
+
+      final isAllDay = (map['isAllDay'] as int?) == 1;
+      final isRecurring = (map['isRecurring'] as int?) == 1;
+
+      return Event(
+        id: map['id'] as int?,
+        title: title.trim(),
+        startDate: startDate,
+        startTimeMinutes: startTimeMinutes,
+        endDate: endDate,
+        endTimeMinutes: endTimeMinutes,
+        memo: (map['memo'] as String?)?.trim(),
+        isAllDay: isAllDay,
+        isRecurring: isRecurring,
+        recurrenceType: map['recurrenceType'] as String?,
+        recurrenceEndDate: map['recurrenceEndDate'] != null
+            ? DateTime.parse(map['recurrenceEndDate'] as String)
+            : null,
+        colorValue: map['color'] as int?,
+      );
+    } catch (e) {
+      throw FormatException('Invalid event data: $e');
+    }
   }
 
   // ── Logic ──────────────────────────────────────────────────────────────────
 
   bool occursOn(DateTime date) {
+    // startDate, endDate, recurrenceEndDate come from DateTime.parse('yyyy-MM-dd')
+    // and are always date-only (midnight). Only the argument needs normalizing.
     final d = DateTime(date.year, date.month, date.day);
-    final start = DateTime(startDate.year, startDate.month, startDate.day);
-    final end = DateTime(endDate.year, endDate.month, endDate.day);
 
-    if (!isRecurring) return !d.isBefore(start) && !d.isAfter(end);
+    if (!isRecurring) return !d.isBefore(startDate) && !d.isAfter(endDate);
 
-    if (d.isBefore(start)) return false;
-    if (recurrenceEndDate != null) {
-      final re = DateTime(recurrenceEndDate!.year,
-          recurrenceEndDate!.month, recurrenceEndDate!.day);
-      if (d.isAfter(re)) return false;
-    }
+    if (d.isBefore(startDate)) return false;
+    if (recurrenceEndDate != null && d.isAfter(recurrenceEndDate!)) return false;
     switch (recurrenceType) {
       case 'daily': return true;
-      case 'weekly': return d.weekday == start.weekday;
-      case 'monthly': return d.day == start.day;
-      case 'yearly': return d.month == start.month && d.day == start.day;
+      case 'weekly': return d.weekday == startDate.weekday;
+      case 'monthly': return d.day == startDate.day;
+      case 'yearly': return d.month == startDate.month && d.day == startDate.day;
       default: return false;
     }
   }
 
-  bool get isMultiDay {
-    final s = DateTime(startDate.year, startDate.month, startDate.day);
-    final e = DateTime(endDate.year, endDate.month, endDate.day);
-    return e.isAfter(s);
-  }
+  bool get isMultiDay => endDate.isAfter(startDate);
 }

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/event.dart';
@@ -61,106 +62,129 @@ class DatabaseService {
   // ── Events ─────────────────────────────────────────────────────────────────
 
   Future<List<Event>> getAllEvents() async {
-    final db = await _dbFuture;
-    final rows = await db.query('events', orderBy: 'startDate ASC');
-    return rows.map(Event.fromMap).toList();
+    try {
+      final db = await _dbFuture;
+      final rows = await db.query('events', orderBy: 'startDate ASC');
+      final events = <Event>[];
+      for (final row in rows) {
+        try {
+          events.add(Event.fromMap(row));
+        } catch (e) {
+          if (kDebugMode) debugPrint('DatabaseService.getAllEvents: Invalid event data: $e');
+          // 잘못된 데이터는 건너뜀
+        }
+      }
+      return events;
+    } catch (e, st) {
+      if (kDebugMode) debugPrint('DatabaseService.getAllEvents failed: $e\n$st');
+      rethrow;
+    }
   }
 
   /// Inserts event and returns it with the assigned [id].
   Future<Event> addEvent(Event event) async {
-    final db = await _dbFuture;
-    final id = await db.insert('events', event.toMap());
-    return Event.fromMap({...event.toMap(), 'id': id});
+    try {
+      final db = await _dbFuture;
+      final id = await db.insert('events', event.toMap());
+      return Event.fromMap({...event.toMap(), 'id': id});
+    } catch (e, st) {
+      if (kDebugMode) debugPrint('DatabaseService.addEvent failed: $e\n$st');
+      rethrow;
+    }
   }
 
   Future<void> updateEvent(Event event) async {
     assert(event.id != null, 'updateEvent called with null id');
-    final db = await _dbFuture;
-    await db.update(
-      'events',
-      event.toMap(),
-      where: 'id = ?',
-      whereArgs: [int.parse(event.id!)],
-    );
+    try {
+      final db = await _dbFuture;
+      await db.update(
+        'events',
+        event.toMap(),
+        where: 'id = ?',
+        whereArgs: [event.id],
+      );
+    } catch (e, st) {
+      if (kDebugMode) debugPrint('DatabaseService.updateEvent failed: $e\n$st');
+      rethrow;
+    }
   }
 
-  Future<void> deleteEvent(String id) async {
-    final db = await _dbFuture;
-    await db.delete('events', where: 'id = ?', whereArgs: [int.parse(id)]);
+  Future<void> deleteEvent(int id) async {
+    try {
+      final db = await _dbFuture;
+      await db.delete('events', where: 'id = ?', whereArgs: [id]);
+    } catch (e, st) {
+      if (kDebugMode) debugPrint('DatabaseService.deleteEvent failed: $e\n$st');
+      rethrow;
+    }
   }
 
   // ── Diaries ────────────────────────────────────────────────────────────────
 
   Future<List<Diary>> getAllDiaries() async {
-    final db = await _dbFuture;
-    final rows = await db.query('diaries', orderBy: 'dateKey DESC');
-    return rows.map(Diary.fromMap).toList();
+    try {
+      final db = await _dbFuture;
+      final rows = await db.query('diaries', orderBy: 'dateKey DESC');
+      final diaries = <Diary>[];
+      for (final row in rows) {
+        try {
+          diaries.add(Diary.fromMap(row));
+        } catch (e) {
+          if (kDebugMode) debugPrint('DatabaseService.getAllDiaries: Invalid diary data: $e');
+          // 잘못된 데이터는 건너뜀
+        }
+      }
+      return diaries;
+    } catch (e, st) {
+      if (kDebugMode) debugPrint('DatabaseService.getAllDiaries failed: $e\n$st');
+      rethrow;
+    }
   }
 
   Future<Diary?> getDiaryByDateKey(String dateKey) async {
-    final db = await _dbFuture;
-    final rows = await db.query(
-      'diaries',
-      where: 'dateKey = ?',
-      whereArgs: [dateKey],
-      limit: 1,
-    );
-    if (rows.isEmpty) return null;
-    return Diary.fromMap(rows.first);
+    try {
+      final db = await _dbFuture;
+      final rows = await db.query(
+        'diaries',
+        where: 'dateKey = ?',
+        whereArgs: [dateKey],
+        limit: 1,
+      );
+      if (rows.isEmpty) return null;
+      try {
+        return Diary.fromMap(rows.first);
+      } catch (e) {
+        if (kDebugMode) debugPrint('DatabaseService.getDiaryByDateKey: Invalid diary data: $e');
+        return null;
+      }
+    } catch (e, st) {
+      if (kDebugMode) debugPrint('DatabaseService.getDiaryByDateKey failed: $e\n$st');
+      rethrow;
+    }
   }
 
   Future<void> saveDiary(Diary diary) async {
-    final db = await _dbFuture;
-    await db.insert(
-      'diaries',
-      diary.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    try {
+      final db = await _dbFuture;
+      await db.insert(
+        'diaries',
+        diary.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } catch (e, st) {
+      if (kDebugMode) debugPrint('DatabaseService.saveDiary failed: $e\n$st');
+      rethrow;
+    }
   }
 
   Future<void> deleteDiary(String dateKey) async {
-    final db = await _dbFuture;
-    await db.delete('diaries', where: 'dateKey = ?', whereArgs: [dateKey]);
-  }
-
-  Future<void> seedMayData() async {
-    final db = await _dbFuture;
-    final existing = await db.query('events',
-        where: "startDate LIKE '2026-05%'", limit: 1);
-    if (existing.isNotEmpty) return;
-
-    final rows = [
-      {'title': '근로자의 날', 'startDate': '2026-05-01', 'endDate': '2026-05-01', 'isAllDay': 1, 'color': 0xFFE53935},
-      {'title': '가족 여행', 'startDate': '2026-05-03', 'endDate': '2026-05-06', 'isAllDay': 1, 'color': 0xFF00ACC1},
-      {'title': '어린이날', 'startDate': '2026-05-05', 'endDate': '2026-05-05', 'isAllDay': 1, 'color': 0xFFFB8C00},
-      {'title': '어버이날', 'startDate': '2026-05-08', 'endDate': '2026-05-08', 'isAllDay': 1, 'color': 0xFFE91E8C},
-      {'title': '건강검진', 'startDate': '2026-05-09', 'endDate': '2026-05-09', 'startTime': 10 * 60, 'endTime': 11 * 60 + 30, 'color': 0xFF3D5AFE},
-      {'title': '팀 프로젝트 회의', 'startDate': '2026-05-12', 'endDate': '2026-05-12', 'startTime': 14 * 60, 'endTime': 15 * 60 + 30, 'color': 0xFF9C27B0},
-      {'title': '점심 약속', 'startDate': '2026-05-13', 'endDate': '2026-05-13', 'startTime': 12 * 60, 'endTime': 13 * 60, 'color': 0xFF43A047},
-      {'title': '스승의 날', 'startDate': '2026-05-15', 'endDate': '2026-05-15', 'isAllDay': 1, 'color': 0xFFFB8C00},
-      {'title': '생일 파티', 'startDate': '2026-05-16', 'endDate': '2026-05-16', 'startTime': 18 * 60, 'endTime': 21 * 60, 'color': 0xFF9C27B0},
-      {'title': 'PT 트레이닝', 'startDate': '2026-05-20', 'endDate': '2026-05-20', 'startTime': 7 * 60, 'endTime': 8 * 60, 'isRecurring': 1, 'recurrenceType': 'weekly', 'color': 0xFF009688},
-      {'title': '부모님 저녁식사', 'startDate': '2026-05-22', 'endDate': '2026-05-22', 'startTime': 19 * 60, 'endTime': 21 * 60, 'color': 0xFFE91E8C},
-      {'title': '부처님오신날', 'startDate': '2026-05-25', 'endDate': '2026-05-25', 'isAllDay': 1, 'color': 0xFFFB8C00},
-      {'title': '영화 관람', 'startDate': '2026-05-27', 'endDate': '2026-05-27', 'startTime': 15 * 60, 'endTime': 17 * 60 + 30, 'color': 0xFF546E7A},
-      {'title': '여름 여행', 'startDate': '2026-05-29', 'endDate': '2026-06-01', 'isAllDay': 1, 'color': 0xFF00ACC1},
-      {'title': '월간 정리', 'startDate': '2026-05-31', 'endDate': '2026-05-31', 'startTime': 10 * 60, 'endTime': 12 * 60, 'color': 0xFF6D4C41},
-    ];
-
-    for (final r in rows) {
-      await db.insert('events', {
-        'title': r['title'],
-        'startDate': r['startDate'],
-        'endDate': r['endDate'],
-        'startTimeMinutes': r['startTime'],
-        'endTimeMinutes': r['endTime'],
-        'memo': null,
-        'isAllDay': r['isAllDay'] ?? 0,
-        'isRecurring': r['isRecurring'] ?? 0,
-        'recurrenceType': r['recurrenceType'],
-        'recurrenceEndDate': null,
-        'color': r['color'],
-      });
+    try {
+      final db = await _dbFuture;
+      await db.delete('diaries', where: 'dateKey = ?', whereArgs: [dateKey]);
+    } catch (e, st) {
+      if (kDebugMode) debugPrint('DatabaseService.deleteDiary failed: $e\n$st');
+      rethrow;
     }
   }
+
 }

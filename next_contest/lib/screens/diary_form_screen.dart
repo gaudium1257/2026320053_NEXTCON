@@ -1,7 +1,11 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import '../models/diary.dart';
 import '../services/database_service.dart';
+import '../services/settings_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/date_utils.dart';
 
 class DiaryFormScreen extends StatefulWidget {
   final DateTime date;
@@ -17,7 +21,7 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
   final _focusNode = FocusNode();
 
   Diary? _existing;
-  String? _mood;
+  String? _mood = SettingsService().defaultMood;
   bool _loading = true;
   bool _saving = false;
   bool _hasChanges = false;
@@ -26,11 +30,22 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
 
   static const _moods = ['😊', '😄', '😢', '😤', '😴', '🤗'];
 
+  // 성능 최적화: 텍스트 변경 디바운싱
+  Timer? _textChangeTimer;
+
   void _onTextChanged() {
     if (_loading) return; // 초기 로드 중엔 변경 감지 무시
-    setState(() {
-      _charCount = _contentCtrl.text.length;
-      _hasChanges = true;
+
+    // 기존 타이머 취소
+    _textChangeTimer?.cancel();
+
+    // 디바운싱: 300ms 후에 업데이트
+    _textChangeTimer = Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      setState(() {
+        _charCount = _contentCtrl.text.length;
+        _hasChanges = true;
+      });
     });
   }
 
@@ -43,24 +58,39 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
 
   @override
   void dispose() {
+    _textChangeTimer?.cancel();
     _contentCtrl.dispose();
     _focusNode.dispose();
     super.dispose();
   }
 
   Future<void> _loadDiary() async {
-    final diary = await _db.getDiaryByDateKey(Diary.keyFrom(widget.date));
-    if (!mounted) return;
-    // Set text outside setState to avoid nested setState via listener
-    _contentCtrl.text = diary?.content ?? '';
-    if (!mounted) return;
-    setState(() {
-      _existing = diary;
-      _mood = diary?.mood;
-      _charCount = _contentCtrl.text.length;
-      _hasChanges = false;
-      _loading = false;
-    });
+    try {
+      final diary = await _db.getDiaryByDateKey(Diary.keyFrom(widget.date));
+      if (!mounted) return;
+      _contentCtrl.text = diary?.content ?? '';
+      if (!mounted) return;
+      setState(() {
+        _existing = diary;
+        _mood = diary?.mood;
+        _charCount = _contentCtrl.text.length;
+        _hasChanges = false;
+        _loading = false;
+      });
+    } catch (e, st) {
+      if (kDebugMode) debugPrint('DiaryFormScreen._loadDiary failed: $e\n$st');
+      if (!mounted) return;
+      setState(() {
+        _existing = null;
+        _mood = SettingsService().defaultMood;
+        _charCount = 0;
+        _hasChanges = false;
+        _loading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('일기를 불러오는 중 오류가 발생했습니다.')),
+      );
+    }
   }
 
   Future<void> _save() async {
@@ -68,6 +98,11 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
     if (content.isEmpty) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('내용을 입력하세요.')));
+      return;
+    }
+    if (content.length > 10000) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('내용이 너무 길어요 (10,000자 이내).')));
       return;
     }
     setState(() => _saving = true);
@@ -155,11 +190,6 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
     return result ?? false;
   }
 
-  String _fmtDate(DateTime d) {
-    const wd = ['월', '화', '수', '목', '금', '토', '일'];
-    return '${d.year}년 ${d.month}월 ${d.day}일 ${wd[d.weekday - 1]}요일';
-  }
-
   String _fmtUpdated(DateTime dt) =>
       '${dt.year}.${dt.month.toString().padLeft(2, '0')}'
       '.${dt.day.toString().padLeft(2, '0')} '
@@ -188,7 +218,7 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
             color: AppTheme.textPrimary,
           ),
           title: Column(children: [
-            Text(_fmtDate(widget.date)),
+            Text(fmtFullKoreanDate(widget.date)),
             if (_existing != null)
               Text(_fmtUpdated(_existing!.updatedAt),
                   style: const TextStyle(
@@ -297,16 +327,18 @@ class _DiaryFormScreenState extends State<DiaryFormScreen> {
                     child: Container(
                       color: AppTheme.surface,
                       child: Stack(children: [
-                        CustomPaint(
-                          painter: _RuledLinePainter(),
-                          child: Container(),
-                        ),
+                        if (SettingsService().showRuledLines)
+                          CustomPaint(
+                            painter: _RuledLinePainter(),
+                            child: Container(),
+                          ),
                         TextField(
                           controller: _contentCtrl,
                           focusNode: _focusNode,
                           expands: true,
                           maxLines: null,
                           minLines: null,
+                          maxLength: 10000,
                           keyboardType: TextInputType.multiline,
                           textAlignVertical: TextAlignVertical.top,
                           style: const TextStyle(

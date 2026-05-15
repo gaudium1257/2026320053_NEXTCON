@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import '../models/event.dart';
 import '../services/database_service.dart';
+import '../services/settings_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/date_utils.dart';
 
 class EventFormScreen extends StatefulWidget {
   final Event? event;
@@ -56,7 +58,7 @@ class _EventFormScreenState extends State<EventFormScreen> {
     _isRecurring = e?.isRecurring ?? false;
     _recurrenceType = e?.recurrenceType ?? 'weekly';
     _recurrenceEndDate = e?.recurrenceEndDate;
-    _colorValue = e?.colorValue ?? 0xFF3D5AFE;
+    _colorValue = e?.colorValue ?? SettingsService().defaultEventColor;
   }
 
   @override
@@ -110,7 +112,41 @@ class _EventFormScreenState extends State<EventFormScreen> {
       ),
     );
     if (picked == null) return;
-    setState(() => isStart ? _startTime = picked : _endTime = picked);
+
+    final sameDayEvent = _startDate.year == _endDate.year &&
+        _startDate.month == _endDate.month &&
+        _startDate.day == _endDate.day;
+
+    if (isStart) {
+      setState(() {
+        _startTime = picked;
+        // Auto-advance end time when it would be at or before the new start
+        if (sameDayEvent && _endTime != null) {
+          final startMins = picked.hour * 60 + picked.minute;
+          final endMins = _endTime!.hour * 60 + _endTime!.minute;
+          if (endMins <= startMins) {
+            final newEndMins = (startMins + 60).clamp(0, 23 * 60 + 59);
+            _endTime = TimeOfDay(
+                hour: newEndMins ~/ 60, minute: newEndMins % 60);
+          }
+        }
+      });
+    } else {
+      if (sameDayEvent && _startTime != null) {
+        final startMins = _startTime!.hour * 60 + _startTime!.minute;
+        final pickedMins = picked.hour * 60 + picked.minute;
+        if (pickedMins <= startMins) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                  content: Text('종료 시간이 시작 시간보다 빠를 수 없어요.')),
+            );
+          }
+          return;
+        }
+      }
+      setState(() => _endTime = picked);
+    }
   }
 
   Future<void> _pickRecurrenceEndDate() async {
@@ -128,12 +164,31 @@ class _EventFormScreenState extends State<EventFormScreen> {
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
-    // 종료일이 시작일보다 이른 경우 방어
     if (_endDate.isBefore(_startDate)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('종료일이 시작일보다 빠를 수 없어요.')),
       );
       return;
+    }
+    if (!_isAllDay && _startTime != null && _endTime != null &&
+        _startDate.year == _endDate.year &&
+        _startDate.month == _endDate.month &&
+        _startDate.day == _endDate.day) {
+      final startMins = _startTime!.hour * 60 + _startTime!.minute;
+      final endMins = _endTime!.hour * 60 + _endTime!.minute;
+      if (endMins <= startMins) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('종료 시간이 시작 시간보다 빠를 수 없어요.')),
+        );
+        return;
+      }
+      // 시간 값 범위 검증
+      if (startMins < 0 || startMins >= 24 * 60 || endMins < 0 || endMins >= 24 * 60) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('시간 값이 올바르지 않아요.')),
+        );
+        return;
+      }
     }
     setState(() => _saving = true);
 
@@ -206,9 +261,6 @@ class _EventFormScreenState extends State<EventFormScreen> {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
-
-  String _fmtDate(DateTime d) =>
-      '${d.year}.${d.month.toString().padLeft(2, '0')}.${d.day.toString().padLeft(2, '0')}';
 
   String _fmtTime(TimeOfDay? t) => t == null
       ? '시간 선택'
@@ -290,9 +342,16 @@ class _EventFormScreenState extends State<EventFormScreen> {
                   filled: false,
                   contentPadding: EdgeInsets.symmetric(vertical: 10),
                 ),
-                validator: (v) => (v == null || v.trim().isEmpty)
-                    ? '제목을 입력하세요'
-                    : null,
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) {
+                    return '제목을 입력하세요';
+                  }
+                  final trimmed = v.trim();
+                  if (trimmed.length > 200) {
+                    return '제목이 너무 길어요 (200자 이내)';
+                  }
+                  return null;
+                },
                 textInputAction: TextInputAction.next,
               ),
             ),
@@ -363,7 +422,7 @@ class _EventFormScreenState extends State<EventFormScreen> {
               date: _startDate,
               time: _isAllDay ? null : _startTime,
               showTime: !_isAllDay,
-              fmtDate: _fmtDate,
+              fmtDate: fmtNumericDate,
               fmtTime: _fmtTime,
               onDateTap: () => _pickDate(isStart: true),
               onTimeTap: () => _pickTime(isStart: true),
@@ -374,7 +433,7 @@ class _EventFormScreenState extends State<EventFormScreen> {
               date: _endDate,
               time: _isAllDay ? null : _endTime,
               showTime: !_isAllDay,
-              fmtDate: _fmtDate,
+              fmtDate: fmtNumericDate,
               fmtTime: _fmtTime,
               onDateTap: () => _pickDate(isStart: false),
               onTimeTap: () => _pickTime(isStart: false),
@@ -397,6 +456,21 @@ class _EventFormScreenState extends State<EventFormScreen> {
               onChanged: (v) => setState(() => _isRecurring = v),
             ),
             if (_isRecurring) ...[
+              if (_recurrenceEndDate == null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+                  child: Row(children: [
+                    const Icon(Icons.info_outline_rounded,
+                        size: 13, color: AppTheme.textLight),
+                    const SizedBox(width: 5),
+                    Text(
+                      '종료일 미설정 시 계속 반복돼요',
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.textLight.withValues(alpha: 0.9)),
+                    ),
+                  ]),
+                ),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
                 child: DropdownButtonFormField<String>(
@@ -425,7 +499,7 @@ class _EventFormScreenState extends State<EventFormScreen> {
                     child: Text(
                       _recurrenceEndDate == null
                           ? '종료일 없음'
-                          : '종료: ${_fmtDate(_recurrenceEndDate!)}',
+                          : '종료: ${fmtNumericDate(_recurrenceEndDate!)}',
                       style: TextStyle(
                         fontSize: 14,
                         color: _recurrenceEndDate == null
@@ -467,6 +541,7 @@ class _EventFormScreenState extends State<EventFormScreen> {
                     height: 1.6),
                 minLines: 5,
                 maxLines: null,
+                maxLength: 2000,
                 textInputAction: TextInputAction.newline,
               ),
             ),
